@@ -34,9 +34,10 @@ This fork is upstream [pingdotgg/t3code](https://github.com/pingdotgg/t3code) pl
 
 ## One-time setup
 
-- `FORK_SYNC_TOKEN` secret: a fine-grained token for this repository with **Contents** and
-  **Workflows** read/write. Without it, upstream merges that change `.github/workflows` cannot
-  be pushed by the sync workflow.
+- `FORK_SYNC_SSH_KEY` secret + "fork-upstream-sync (Actions)" deploy key (write): a key pair
+  dedicated to this repository that the sync workflow pushes with. A deploy key may push
+  upstream's workflow changes and its pushes trigger the release. Revoke or rotate it under
+  Settings → Deploy keys.
 - Upstream's own workflows are disabled in this fork's Actions settings; only the two fork
   workflows run.
 

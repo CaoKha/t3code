@@ -10,7 +10,6 @@ on:
   workflow_dispatch:
 
 permissions:
-  actions: write
   contents: write
   issues: write
 
@@ -22,19 +21,20 @@ env:
   UPSTREAM_REPOSITORY: pingdotgg/t3code
   BRANCH: main
   ISSUE_TITLE: Upstream merge conflict
-  # Pushing merges that touch .github/workflows needs a token with the `workflows`
-  # permission, which the default GITHUB_TOKEN never has.
-  GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
+  GH_TOKEN: ${{ github.token }}
 
 jobs:
   sync:
     runs-on: ubuntu-24.04
     steps:
+      # Pushes go through FORK_SYNC_SSH_KEY, a write deploy key for this repository: unlike
+      # GITHUB_TOKEN it may push upstream's workflow changes, and its pushes start the
+      # release workflow like any other push to main.
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.BRANCH }}
           fetch-depth: 0
-          token: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
+          ssh-key: ${{ secrets.FORK_SYNC_SSH_KEY }}
 
       - name: Find the newest upstream nightly
         id: upstream
@@ -73,13 +73,9 @@ jobs:
             git merge --abort
           fi
 
-      - name: Push and release
+      - name: Push (starts the fork release)
         if: steps.merge.outputs.conflict == 'false'
-        run: |
-          set -euo pipefail
-          git push origin "HEAD:${BRANCH}"
-          # Pushes made with GITHUB_TOKEN start no workflows, so start the release explicitly.
-          gh workflow run fork-release.yml --ref "$BRANCH"
+        run: git push origin "HEAD:${BRANCH}"
 
       - name: Publish sync status
         if: always() && steps.upstream.outputs.tag != ''
