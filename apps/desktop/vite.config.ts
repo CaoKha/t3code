@@ -18,6 +18,10 @@ const publicConfigDefine = {
   __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: JSON.stringify(
     repoEnv.T3CODE_CLERK_PUBLISHABLE_KEY?.trim() ?? "",
   ),
+  // `owner/repo` of a fork whose CI releases this build updates from (ForkReleaseUpdater).
+  __T3CODE_BUILD_FORK_RELEASE_REPOSITORY__: JSON.stringify(
+    repoEnv.T3CODE_FORK_RELEASE_REPOSITORY?.trim() ?? "",
+  ),
 };
 
 export default defineConfig({
