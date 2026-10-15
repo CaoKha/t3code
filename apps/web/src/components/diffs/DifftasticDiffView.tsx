@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
   type MouseEvent,
+  type ReactNode,
 } from "react";
 
 import { cn } from "~/lib/utils";
@@ -48,11 +49,14 @@ interface DifftasticDiffViewProps {
   readonly cacheKey: string;
   readonly layout: "stacked" | "split";
   readonly wordWrap: boolean;
-  readonly selectedFileKey: string | null;
-  readonly revealRequestId: number;
+  readonly selectedFileKey?: string | null;
+  readonly revealRequestId?: number;
   readonly onToggleCollapsed: (fileKey: string) => void;
-  readonly onOpenFile: (filePath: string) => void;
-  readonly onFileContextMenu: (filePath: string, event: MouseEvent) => void;
+  /** Makes the file name open the file; omitted where there is nothing local to open. */
+  readonly onOpenFile?: ((filePath: string) => void) | undefined;
+  readonly onFileContextMenu?: ((filePath: string, event: MouseEvent) => void) | undefined;
+  /** Rendered after the last file, inside the scroll container (e.g. a "load more" sentinel). */
+  readonly footer?: ReactNode;
 }
 
 /** Renders each changed file with difftastic's structural diff instead of a line patch. */
@@ -63,11 +67,12 @@ export function DifftasticDiffView({
   cacheKey,
   layout,
   wordWrap,
-  selectedFileKey,
-  revealRequestId,
+  selectedFileKey = null,
+  revealRequestId = 0,
   onToggleCollapsed,
   onOpenFile,
   onFileContextMenu,
+  footer,
 }: DifftasticDiffViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -95,6 +100,7 @@ export function DifftasticDiffView({
           onFileContextMenu={onFileContextMenu}
         />
       ))}
+      {footer}
     </div>
   );
 }
@@ -117,16 +123,20 @@ const DifftasticFileSection = memo(function DifftasticFileSection({
   readonly layout: "stacked" | "split";
   readonly wordWrap: boolean;
   readonly onToggleCollapsed: (fileKey: string) => void;
-  readonly onOpenFile: (filePath: string) => void;
-  readonly onFileContextMenu: (filePath: string, event: MouseEvent) => void;
+  readonly onOpenFile: ((filePath: string) => void) | undefined;
+  readonly onFileContextMenu: ((filePath: string, event: MouseEvent) => void) | undefined;
 }) {
   const filePath = resolveFileDiffPath(file.fileDiff);
   const stat = useMemo(() => getDiffLineStat([file.fileDiff]), [file.fileDiff]);
+  const displayPath =
+    file.fileDiff.prevName && file.fileDiff.prevName !== filePath
+      ? `${file.fileDiff.prevName} → ${filePath}`
+      : filePath;
   return (
     <section data-file-key={file.fileKey} className="border-b border-border/70">
       <header
         className="sticky top-0 z-10 flex h-9 items-center gap-1.5 border-b border-border/60 bg-code px-2 font-sans text-xs"
-        onContextMenu={(event) => onFileContextMenu(filePath, event)}
+        onContextMenu={(event) => onFileContextMenu?.(filePath, event)}
       >
         <Button
           size="icon-micro"
@@ -139,15 +149,17 @@ const DifftasticFileSection = memo(function DifftasticFileSection({
             className={cn("size-3.5 transition-transform", !file.collapsed && "rotate-90")}
           />
         </Button>
-        <button
-          type="button"
-          className="min-w-0 truncate font-mono text-code-foreground hover:underline"
-          onClick={() => onOpenFile(filePath)}
-        >
-          {file.fileDiff.prevName && file.fileDiff.prevName !== filePath
-            ? `${file.fileDiff.prevName} → ${filePath}`
-            : filePath}
-        </button>
+        {onOpenFile ? (
+          <button
+            type="button"
+            className="min-w-0 truncate font-mono text-code-foreground hover:underline"
+            onClick={() => onOpenFile(filePath)}
+          >
+            {displayPath}
+          </button>
+        ) : (
+          <span className="min-w-0 truncate font-mono text-code-foreground">{displayPath}</span>
+        )}
         <DiffFilePathCopyButton filePath={filePath} />
         <span className="ms-auto shrink-0">
           <DiffStatLabel additions={stat.additions} deletions={stat.deletions} />
@@ -235,7 +247,7 @@ function DifftasticFileBody({
   );
   const [expandedGapIds, setExpandedGapIds] = useState<ReadonlySet<number>>(() => new Set());
   const result = query.data;
-  const filePath = target._tag === "git" ? target.file.newPath : target.newPath;
+  const filePath = target._tag === "turn" ? target.newPath : target.file.newPath;
   const oldSyntax = useSyntaxLines(result?.oldContents ?? "", filePath);
   const newSyntax = useSyntaxLines(result?.newContents ?? "", filePath);
   const syntax = useMemo(() => ({ old: oldSyntax, new: newSyntax }), [newSyntax, oldSyntax]);

@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 import { NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { GitCommandError } from "./git.ts";
+import { PullRequestDiffFileContentsInput } from "./pullRequest.ts";
 import { VcsError } from "./vcs.ts";
 
 export const ReviewDiffPreviewInput = Schema.Struct({
@@ -81,6 +82,9 @@ const ReviewDiffFileChangeType = Schema.Literals([
 export const ReviewStructuralDiffTarget = Schema.Union([
   Schema.TaggedStruct("git", {
     file: ReviewDiffFileContentsInput,
+  }),
+  Schema.TaggedStruct("pullRequest", {
+    file: PullRequestDiffFileContentsInput,
   }),
   Schema.TaggedStruct("turn", {
     threadId: ThreadId,

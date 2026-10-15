@@ -60,9 +60,16 @@ const decodeDifftOutput = Schema.decodeUnknownEffect(Schema.fromJsonString(Difft
 export class StructuralDiffService extends Context.Service<
   StructuralDiffService,
   {
+    /** Reads the file pair for a working-tree, branch or turn target, then diffs it. */
     readonly getStructuralDiff: (
       input: ReviewStructuralDiffInput,
     ) => Effect.Effect<ReviewStructuralDiffResult, ReviewStructuralDiffError>;
+    /** Diffs a file pair the caller already read, e.g. a pull request's. */
+    readonly diffContents: (input: {
+      readonly filePath: string;
+      readonly oldContents: string;
+      readonly newContents: string;
+    }) => Effect.Effect<ReviewStructuralDiffResult, ReviewStructuralDiffError>;
   }
 >()("t3/review/StructuralDiffService") {}
 
@@ -213,7 +220,7 @@ export const make = Effect.gen(function* () {
   });
 
   const readContents = Effect.fn("StructuralDiffService.readContents")(function* (
-    target: ReviewStructuralDiffTarget,
+    target: Exclude<ReviewStructuralDiffTarget, { readonly _tag: "pullRequest" }>,
   ) {
     if (target._tag === "git") {
       return yield* review
@@ -283,11 +290,9 @@ export const make = Effect.gen(function* () {
       );
   }, Effect.scoped);
 
-  const getStructuralDiff: StructuralDiffService["Service"]["getStructuralDiff"] = Effect.fn(
-    "StructuralDiffService.getStructuralDiff",
-  )(function* (input) {
-    const { oldContents, newContents } = yield* readContents(input.target);
-    const filePath = input.target._tag === "git" ? input.target.file.newPath : input.target.newPath;
+  const diffContents: StructuralDiffService["Service"]["diffContents"] = Effect.fn(
+    "StructuralDiffService.diffContents",
+  )(function* ({ filePath, oldContents, newContents }) {
     const unavailable = (reason: string): ReviewStructuralDiffResult => ({
       status: "unavailable",
       reason,
@@ -318,7 +323,22 @@ export const make = Effect.gen(function* () {
     return toStructuralDiffResult(parsed, oldContents, newContents);
   });
 
-  return StructuralDiffService.of({ getStructuralDiff });
+  const getStructuralDiff: StructuralDiffService["Service"]["getStructuralDiff"] = Effect.fn(
+    "StructuralDiffService.getStructuralDiff",
+  )(function* (input) {
+    const { target } = input;
+    // Pull request contents come from the host's PullRequestService, which the RPC layer owns.
+    if (target._tag === "pullRequest") {
+      return yield* fail("Pull request diffs are read by the RPC handler.");
+    }
+    const contents = yield* readContents(target);
+    return yield* diffContents({
+      filePath: target._tag === "git" ? target.file.newPath : target.newPath,
+      ...contents,
+    });
+  });
+
+  return StructuralDiffService.of({ getStructuralDiff, diffContents });
 });
 
 export const layer = Layer.effect(StructuralDiffService, make).pipe(

@@ -1,4 +1,4 @@
-import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
+import { OrchestrationDispatchCommandError, ReviewStructuralDiffError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 
@@ -2894,7 +2894,23 @@ const layerWsRpc = (
           vcsProvisioning.initRepository(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
         [WS_METHODS.reviewGetDiffPreview]: (input) => review.getDiffPreview(input),
         [WS_METHODS.reviewGetDiffFileContents]: (input) => review.getDiffFileContents(input),
-        [WS_METHODS.reviewGetStructuralDiff]: (input) => structuralDiff.getStructuralDiff(input),
+        [WS_METHODS.reviewGetStructuralDiff]: (input) => {
+          const { target } = input;
+          if (target._tag !== "pullRequest") return structuralDiff.getStructuralDiff(input);
+          // Pull request file pairs come from the host, through the shared PullRequestService.
+          return pullRequests.diffFileContents(target.file).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ReviewStructuralDiffError({
+                  message: "Could not read the pull request files to compare.",
+                  cause,
+                }),
+            ),
+            Effect.flatMap((contents) =>
+              structuralDiff.diffContents({ filePath: target.file.newPath, ...contents }),
+            ),
+          );
+        },
         [WS_METHODS.terminalOpen]: (input) => terminalManager.open(input),
         [WS_METHODS.terminalAttach]: (input) =>
           Stream.callback<TerminalAttachStreamEvent, TerminalError>((queue) =>
