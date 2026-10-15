@@ -1,0 +1,170 @@
+# Keeps this fork on top of upstream: merges each new upstream nightly tag into main,
+# then starts a fork release so every install updates. It stops, and reports why in an
+# issue and in the desktop app's update button (upstream-status.json on the `channel`
+# release), when the merge conflicts, when upstream adds workflows (pushing them unreviewed
+# would run them here), or when the push fails. Pushes to main rerun it, so resolving a
+# conflict by hand clears the status right away.
+name: Fork upstream sync
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: fork-upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: pingdotgg/t3code
+  BRANCH: main
+  CHANNEL_TAG: channel
+  ISSUE_TITLE: Upstream sync needs attention
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    # Holds FORK_SYNC_SSH_KEY, so only jobs that name this environment can read it.
+    environment: fork-sync
+    steps:
+      # Pushes go through FORK_SYNC_SSH_KEY, a write deploy key for this repository: unlike
+      # GITHUB_TOKEN it may push upstream's workflow changes, and its pushes start the
+      # release workflow like any other push to main.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+          ssh-key: ${{ secrets.FORK_SYNC_SSH_KEY }}
+
+      - name: Find the newest upstream nightly
+        id: upstream
+        run: |
+          set -euo pipefail
+          upstream="https://github.com/${UPSTREAM_REPOSITORY}.git"
+          # Ask upstream directly: this fork's own releases use the same tag pattern.
+          tag="$(git ls-remote --tags --refs "$upstream" 'v*-nightly.*' | sed 's|.*refs/tags/||' | sort -V | tail -n 1)"
+          git fetch --quiet "$upstream" "refs/tags/${tag}:refs/tags/${tag}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "$tag" HEAD; then
+            echo "Already contains ${tag}."
+            echo "behind=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "behind=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream
+        id: merge
+        if: steps.upstream.outputs.behind == 'true'
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -uo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          delimiter="EOF_$(openssl rand -hex 16)"
+          before="$(git rev-parse HEAD)"
+          if git merge --no-edit -m "Merge upstream ${TAG}" "$TAG"; then
+            # New upstream workflows would start running here once pushed: leave them to a
+            # person. The fork's own workflows are expected.
+            added="$(git diff --name-only --diff-filter=A "$before" HEAD -- .github/workflows |
+              grep -v '^\.github/workflows/fork-' || true)"
+            if [ -n "$added" ]; then
+              result="needs-review"
+              files="$added"
+            else
+              result="merged"
+              files=""
+            fi
+          else
+            result="conflict"
+            files="$(git diff --name-only --diff-filter=U)"
+            git merge --abort
+          fi
+          echo "Merge result: ${result}"
+          {
+            echo "result=${result}"
+            echo "files<<${delimiter}"
+            echo "$files"
+            echo "${delimiter}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Push (starts the fork release)
+        id: push
+        if: steps.merge.outputs.result == 'merged'
+        run: git push origin "HEAD:${BRANCH}"
+
+      - name: Publish sync status
+        if: always() && steps.upstream.outputs.tag != ''
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+          BEHIND: ${{ steps.upstream.outputs.behind }}
+          RESULT: ${{ steps.merge.outputs.result }}
+          FILES: ${{ steps.merge.outputs.files }}
+          PUSH: ${{ steps.push.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$BEHIND" = "false" ] || { [ "$RESULT" = "merged" ] && [ "$PUSH" = "success" ]; }; then
+            status="in-sync"
+          elif [ "$RESULT" = "conflict" ] || [ "$RESULT" = "needs-review" ]; then
+            status="$RESULT"
+          elif [ "$RESULT" = "merged" ] && [ "$PUSH" = "failure" ]; then
+            status="push-failed"
+          else
+            echo "The sync stopped before it had a result; the status is unchanged."
+            exit 0
+          fi
+          jq -n --arg status "$status" --arg tag "$TAG" --arg files "$FILES" \
+            '{status: $status, tag: $tag}
+              + if $status == "conflict" or $status == "needs-review"
+                then {files: ($files | split("\n") | map(select(length > 0)))} else {} end
+              + if $status == "push-failed" then {detail: "git push to main was rejected"} else {} end' \
+            > upstream-status.json
+          cat upstream-status.json
+          if ! gh release view "$CHANNEL_TAG" >/dev/null 2>&1; then
+            gh release create "$CHANNEL_TAG" --target "$BRANCH" --prerelease \
+              --title "Fork update channel" \
+              --notes "latest.json names the newest fork build; upstream-status.json reports the last upstream sync. CI keeps both current." ||
+              gh release view "$CHANNEL_TAG" >/dev/null
+          fi
+          gh release upload "$CHANNEL_TAG" upstream-status.json --clobber
+
+          issue="$(gh issue list --state open --search "\"$ISSUE_TITLE\" in:title" \
+            --json number --jq '.[0].number // empty')"
+          # The backticks here and below are Markdown, not command substitutions.
+          # shellcheck disable=SC2016
+          file_list="$(printf '%s\n' "$FILES" | sed '/^$/d; s/^/- `/; s/$/`/')"
+          # shellcheck disable=SC2016
+          case "$status" in
+            conflict)
+              body="$(printf 'Merging upstream `%s` into `%s` conflicts with this fork in:\n\n%s\n\nResolve it locally, then push:\n\n```sh\ngit fetch upstream --tags\ngit merge %s\n# fix the conflicts, then\ngit commit && git push\n```\n\nThe push builds a new release and the update button picks it up.' \
+                "$TAG" "$BRANCH" "$file_list" "$TAG")"
+              ;;
+            needs-review)
+              body="$(printf 'Upstream `%s` adds workflows this fork has not reviewed:\n\n%s\n\nThe sync does not push them, because pushing would start running them here. Review them (disable unwanted ones in the Actions tab once they exist), then merge and push by hand:\n\n```sh\ngit fetch upstream --tags\ngit merge %s\ngit push\n```' \
+                "$TAG" "$file_list" "$TAG")"
+              ;;
+            push-failed)
+              body="$(printf 'Upstream `%s` merged cleanly, but pushing it to `%s` failed. Check the [workflow run](%s) and the `FORK_SYNC_SSH_KEY` secret of the `fork-sync` environment (and its deploy key).' \
+                "$TAG" "$BRANCH" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")"
+              ;;
+            *)
+              body=""
+              ;;
+          esac
+          if [ -n "$body" ]; then
+            if [ -n "$issue" ]; then
+              gh issue edit "$issue" --body "$body"
+            else
+              gh issue create --title "$ISSUE_TITLE" --body "$body"
+            fi
+          elif [ -n "$issue" ]; then
+            gh issue close "$issue" --comment "In sync with upstream ${TAG}."
+          fi
