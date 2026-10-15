@@ -137,8 +137,8 @@ const layerElectron = Layer.mergeAll(
   ElectronSafeStorage.layer,
   ElectronShell.layer,
   ElectronTheme.layer,
-  // Source builds read their marker file, query GitHub releases and run the fork's build script.
-  ElectronUpdater.layerWithSourceBuild.pipe(
+  // Fork builds read their fork's GitHub releases and download the app from them.
+  ElectronUpdater.layerWithForkReleases.pipe(
     Layer.provide(
       Layer.mergeAll(ElectronApp.layer, NodeServices.layer, NodeHttpClient.layerUndici),
     ),

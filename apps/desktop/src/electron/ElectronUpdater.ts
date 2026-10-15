@@ -7,7 +7,7 @@ import * as Scope from "effect/Scope";
 
 import { autoUpdater } from "electron-updater";
 
-import * as SourceBuildUpdater from "./SourceBuildUpdater.ts";
+import * as ForkReleaseUpdater from "./ForkReleaseUpdater.ts";
 
 type AutoUpdater = typeof autoUpdater;
 
@@ -186,11 +186,11 @@ export const make = ElectronUpdater.of({
 
 export const layer = Layer.succeed(ElectronUpdater, make);
 
-/** Builds from a fork (see SourceBuildUpdater) update from source; everything else uses electron-updater. */
-export const layerWithSourceBuild = Layer.effect(
+/** Fork builds update from their fork's CI releases (see ForkReleaseUpdater); others use electron-updater. */
+export const layerWithForkReleases = Layer.effect(
   ElectronUpdater,
   Effect.gen(function* () {
-    const sourceBuild = yield* SourceBuildUpdater.readSourceBuildConfig;
-    return Option.isSome(sourceBuild) ? yield* SourceBuildUpdater.make(sourceBuild.value) : make;
+    const repository = yield* ForkReleaseUpdater.forkReleaseRepository;
+    return Option.isSome(repository) ? yield* ForkReleaseUpdater.make(repository.value) : make;
   }),
 );

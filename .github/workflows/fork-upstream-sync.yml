@@ -1,0 +1,116 @@
+# Keeps this fork on top of upstream: merges each new upstream nightly tag into main,
+# then starts a fork release so every install updates. A merge conflict stops the sync
+# and is reported in an issue and in the desktop app's update button (via the
+# `upstream-status` release, whose body is JSON).
+name: Fork upstream sync
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+
+concurrency:
+  group: fork-upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: pingdotgg/t3code
+  BRANCH: main
+  ISSUE_TITLE: Upstream merge conflict
+  # Pushing merges that touch .github/workflows needs a token with the `workflows`
+  # permission, which the default GITHUB_TOKEN never has.
+  GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
+
+      - name: Find the newest upstream nightly
+        id: upstream
+        run: |
+          set -euo pipefail
+          git fetch --quiet --tags "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          tag="$(git tag --list 'v*-nightly.*' --sort=-version:refname | head -n 1)"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "$tag" HEAD; then
+            echo "Already contains ${tag}."
+            echo "behind=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "behind=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream
+        id: merge
+        if: steps.upstream.outputs.behind == 'true'
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -uo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git merge --no-edit -m "Merge upstream ${TAG}" "$TAG"; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "conflict=true"
+              echo "files<<EOF"
+              git diff --name-only --diff-filter=U
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            git merge --abort
+          fi
+
+      - name: Push and release
+        if: steps.merge.outputs.conflict == 'false'
+        run: |
+          set -euo pipefail
+          git push origin "HEAD:${BRANCH}"
+          # Pushes made with GITHUB_TOKEN start no workflows, so start the release explicitly.
+          gh workflow run fork-release.yml --ref "$BRANCH"
+
+      - name: Publish sync status
+        if: always() && steps.upstream.outputs.tag != ''
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+          CONFLICT: ${{ steps.merge.outputs.conflict == 'true' }}
+          FILES: ${{ steps.merge.outputs.files }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFLICT" = "true" ]; then
+            status="$(jq -nc --arg tag "$TAG" --arg files "$FILES" \
+              '{status: "conflict", tag: $tag, files: ($files | split("\n") | map(select(length > 0)))}')"
+          else
+            status="$(jq -nc --arg tag "$TAG" '{status: "in-sync", tag: $tag}')"
+          fi
+          echo "$status"
+          if gh release view upstream-status --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit upstream-status --repo "$GITHUB_REPOSITORY" --notes "$status"
+          else
+            gh release create upstream-status --repo "$GITHUB_REPOSITORY" --target "$BRANCH" \
+              --prerelease --title "Upstream sync status" --notes "$status"
+          fi
+
+          issue="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$ISSUE_TITLE\" in:title" \
+            --json number --jq '.[0].number // empty')"
+          if [ "$CONFLICT" = "true" ]; then
+            body="$(printf 'Merging upstream `%s` into `%s` conflicts with this fork in:\n\n%s\n\nResolve it locally, then push:\n\n```sh\ngit fetch upstream --tags\ngit merge %s\n# fix the conflicts, then\ngit commit && git push\n```\n\nThe push builds a new release and the update button picks it up.' \
+              "$TAG" "$BRANCH" "$(printf '%s\n' "$FILES" | sed '/^$/d; s/^/- `/; s/$/`/')" "$TAG")"
+            if [ -n "$issue" ]; then
+              gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --body "$body"
+            else
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE_TITLE" --body "$body"
+            fi
+          elif [ -n "$issue" ]; then
+            gh issue close "$issue" --repo "$GITHUB_REPOSITORY" --comment "Merged ${TAG} cleanly."
+          fi

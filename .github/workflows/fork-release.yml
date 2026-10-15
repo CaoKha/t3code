@@ -1,0 +1,154 @@
+# Builds this fork on every push to its branch and publishes the binaries as a GitHub
+# release, which the desktop app's update button and remote servers install from.
+#
+# Version: <upstream nightly base>-nightly.<UTC date>.<10000 + run number>. It keeps the
+# nightly format (the app name, keychain entry and update channel depend on it) and always
+# sorts after the upstream nightly it was built from.
+name: Fork release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: pingdotgg/t3code
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve version
+        id: version
+        run: |
+          set -euo pipefail
+          git fetch --quiet --tags "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          base_tag="$(git describe --tags --abbrev=0 --match 'v*-nightly.*' HEAD)"
+          base="${base_tag#v}"
+          base="${base%%-*}"
+          version="${base}-nightly.$(date -u +%Y%m%d).$((10000 + GITHUB_RUN_NUMBER))"
+          echo "Building ${version} from ${GITHUB_SHA} (upstream ${base_tag})"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+  macos:
+    needs: version
+    runs-on: macos-15
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node scripts/update-release-package-versions.ts "$VERSION"
+      - name: Build desktop app
+        # GITHUB_REPOSITORY would give the app an electron-updater feed; this fork's app
+        # updates itself from these releases instead (see SourceBuildUpdater).
+        env:
+          GITHUB_REPOSITORY: ""
+          T3CODE_FORK_RELEASE_REPOSITORY: ${{ github.repository }}
+        run: >-
+          pnpm exec node scripts/build-desktop-artifact.ts
+          --platform mac --arch arm64 --target zip
+          --build-version "$VERSION" --output-dir release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-mac-arm64
+          path: release/*.zip
+          if-no-files-found: error
+
+  linux-cli:
+    needs: version
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node scripts/update-release-package-versions.ts "$VERSION"
+      - name: Build web client and server bundle
+        run: |
+          pnpm exec vp run --filter @t3tools/web build
+          pnpm exec node apps/server/scripts/cli.ts build
+      # The single-executable needs a host Node with --build-sea (25.7+). It embeds the
+      # Node version pinned in apps/server/vite.config.ts, not this one.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+      - name: Build server single-executable
+        env:
+          T3CODE_PACK_EXE_TARGET: linux-x64
+        run: pnpm exec node apps/server/scripts/cli.ts build-exe --verbose
+      - name: Build resource monitor
+        run: |
+          cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml
+          mkdir -p "$RUNNER_TEMP/resource-monitor/linux-x64"
+          cp native/resource-monitor/target/release/t3-resource-monitor "$RUNNER_TEMP/resource-monitor/linux-x64/"
+      - name: Build CLI archive
+        run: >-
+          pnpm exec node scripts/build-cli-archive.ts
+          --platform linux --arch x64 --version "$VERSION"
+          --resource-monitor-dir "$RUNNER_TEMP/resource-monitor" --output-dir release-cli
+      - name: Smoke-test CLI archive
+        run: >-
+          pnpm exec node scripts/smoke-cli-archive.ts
+          --archive "release-cli/t3-${VERSION}-linux-x64.tar.gz" --expect-version "$VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-linux-x64
+          path: release-cli/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [version, macos, linux-cli]
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Publish release
+        run: |
+          set -euo pipefail
+          cd assets
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+          gh release create "v${VERSION}" ./* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "T3 Code fork ${VERSION}" \
+            --notes "Built from ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}."
+      - name: Prune old releases
+        # Keep the newest 10 fork builds; the update button only needs the latest.
+        run: |
+          set -euo pipefail
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | test("^v.*-nightly\\."))] | sort_by(.createdAt) | reverse | .[10:] | .[].tagName' |
+            while read -r tag; do
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+            done

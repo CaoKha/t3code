@@ -22,6 +22,8 @@ import { HttpClient } from "effect/http";
 
 import { CLI_RELEASE_BASE_URL_ENV } from "@t3tools/shared/cliRelease";
 
+import packageJson from "../../package.json" with { type: "json" };
+
 import * as ServerConfig from "../config.ts";
 import * as DesktopAppUpdate from "../desktopUpdate/DesktopAppUpdate.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -36,14 +38,38 @@ import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 
 const PREFLIGHT_TIMEOUT = Duration.seconds(30);
+/** Time for the update acknowledgement to reach the client before the server stops. */
+const RESPAWN_EXIT_DELAY = Duration.seconds(1.5);
+
+/**
+ * Opts a supervised server (for example a systemd unit with Restart=always) into
+ * "respawn" updates: releases install under `<dir>/runtime/versions/<version>`, the
+ * `<dir>/current` symlink moves to the new one and the server stops, so the supervisor
+ * starts it again from `current`. The supervisor must launch `<dir>/current/t3`.
+ */
+export const SELF_UPDATE_DIR_ENV = "T3CODE_SELF_UPDATE_DIR";
 
 export function resolveServerSelfUpdateCapability(input: {
   readonly desktopManaged: boolean;
   readonly launcherManaged: boolean;
+  readonly respawnManaged?: boolean;
 }): ServerSelfUpdateCapability | null {
   if (input.desktopManaged) return "desktop-managed" as const;
-  return input.launcherManaged ? ("boot-service" as const) : null;
+  if (input.launcherManaged) return "boot-service" as const;
+  return input.respawnManaged ? ("respawn" as const) : null;
 }
+
+/** The respawn update directory, when this server opted in. */
+export const respawnUpdateDir = Config.String(SELF_UPDATE_DIR_ENV).pipe(
+  Config.option,
+  Effect.map((value) =>
+    Option.filter(
+      Option.map(value, (dir) => dir.trim()),
+      (dir) => dir !== "",
+    ),
+  ),
+  Effect.orElseSucceed(() => Option.none<string>()),
+);
 
 export class ServerSelfUpdate extends Context.Service<
   ServerSelfUpdate,
@@ -178,6 +204,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
   const path = yield* Path.Path;
   const platform = yield* HostProcess.Platform;
   const arch = yield* HostProcess.Architecture;
+  const serverPid = process.pid;
   // Archive-distributed targets download from GitHub Releases. The client is
   // optional so callers without one (tests, npm-only hosts) still construct.
   const httpClient = yield* HttpClient.HttpClient;
@@ -185,13 +212,93 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     yield* Config.String(CLI_RELEASE_BASE_URL_ENV).pipe(Config.option),
   );
   const inFlight = yield* Ref.make(false);
+  const respawnDir = yield* respawnUpdateDir;
 
-  const capability: ServerSelfUpdateCapability | null =
-    serverConfig.mode === "desktop" ? "desktop-managed" : launcher.managed ? "boot-service" : null;
+  const capability = resolveServerSelfUpdateCapability({
+    desktopManaged: serverConfig.mode === "desktop",
+    launcherManaged: launcher.managed,
+    respawnManaged: Option.isSome(respawnDir),
+  });
   const failWith = (reason: string, cause?: unknown) =>
     cause === undefined
       ? new ServerSelfUpdateError({ reason })
       : new ServerSelfUpdateError({ reason, cause });
+
+  const updateByRespawn = Effect.fn("cloud.server_self_update.respawn")(
+    function* (
+      dir: string,
+      targetVersion: string,
+      reportProgress: (
+        stage: ServerSelfUpdateProgressStage,
+      ) => Effect.Effect<void, ServerSelfUpdateError>,
+    ) {
+      yield* reportProgress("downloading");
+      const paths = yield* ensurePinnedRuntimeInstalled({
+        baseDir: dir,
+        version: targetVersion,
+        fs,
+        path,
+        runner,
+        httpClient,
+        platform,
+        arch,
+        releaseBaseUrl,
+        validate: (runtime) =>
+          runner
+            .run({
+              command: pinnedRuntimeCommand(runtime).command,
+              args: [...pinnedRuntimeCommand(runtime).args, "--version"],
+              timeout: PREFLIGHT_TIMEOUT,
+            })
+            .pipe(
+              Effect.mapError(
+                (cause) => new PinnedRuntimeInstallError({ step: "running the staged t3", cause }),
+              ),
+              Effect.flatMap((result) =>
+                result.code === 0 && result.stdout.includes(targetVersion)
+                  ? Effect.void
+                  : Effect.fail(
+                      new PinnedRuntimeInstallError({ step: "verifying the staged t3 version" }),
+                    ),
+              ),
+            ),
+      }).pipe(
+        Effect.mapError((error) => failWith(`Could not prepare t3@${targetVersion}.`, error)),
+      );
+
+      yield* reportProgress("installing");
+      // Swap `current` atomically: a new symlink renamed over the old one.
+      const currentPath = path.join(dir, "current");
+      const nextLink = path.join(dir, `.current-${targetVersion}`);
+      yield* fs.remove(nextLink, { force: true });
+      yield* fs.symlink(path.relative(dir, paths.versionDir), nextLink);
+      yield* fs.rename(nextLink, currentPath);
+      yield* Effect.logInfo("Server update installed; restarting onto it.", {
+        targetVersion,
+        runtimePath: paths.entryPath,
+      });
+
+      // Stop gracefully (SIGTERM runs the normal shutdown) once the reply is sent;
+      // the supervisor restarts the server from `current`.
+      yield* runner
+        .run({
+          command: "/bin/sh",
+          args: [
+            "-c",
+            'sleep "$1"; kill -TERM "$2"',
+            "t3-respawn",
+            String(Duration.toSeconds(RESPAWN_EXIT_DELAY)),
+            String(serverPid),
+          ],
+        })
+        .pipe(Effect.ignore, Effect.forkDetach);
+      return { targetVersion, method: "respawn" as const };
+    },
+    Effect.catchTags({
+      PlatformError: (error) =>
+        Effect.fail(failWith("Could not switch to the new server version.", error)),
+    }),
+  );
 
   const update: ServerSelfUpdate["Service"]["update"] = Effect.fn(
     "cloud.server_self_update.update",
@@ -216,6 +323,18 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     const targetVersion = input.targetVersion.trim();
     if (!isExactServiceVersion(targetVersion)) {
       return yield* failWith(`'${targetVersion}' is not an exact t3 version.`);
+    }
+    if (capability === "respawn" && Option.isSome(respawnDir)) {
+      if (targetVersion === packageJson.version) {
+        return yield* failWith(`This server already runs t3@${targetVersion}.`);
+      }
+      if (yield* Ref.getAndSet(inFlight, true)) {
+        return yield* failWith("A server update is already in progress.");
+      }
+      return yield* updateByRespawn(respawnDir.value, targetVersion, reportProgress).pipe(
+        Effect.tap(() => onHandoffAccepted()),
+        Effect.onError(() => Ref.set(inFlight, false)),
+      );
     }
     if (yield* Ref.getAndSet(inFlight, true)) {
       return yield* failWith("A server update is already in progress.");
