@@ -26,6 +26,7 @@ import {
   DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE,
   DEFAULT_UNIFIED_SETTINGS,
   type ChatWidth,
+  type DiffEngine,
   type DiffLayout,
   type EnvironmentIdentificationMode,
   MAX_APPEARANCE_CONTRAST,
@@ -209,6 +210,11 @@ const CHAT_WIDTH_LABELS: Record<ChatWidth, string> = {
 const DIFF_LAYOUT_LABELS: Record<DiffLayout, string> = {
   stacked: "Stacked",
   split: "Split",
+};
+
+const DIFF_ENGINE_LABELS: Record<DiffEngine, string> = {
+  standard: "Standard",
+  difftastic: "difftastic",
 };
 
 const QUIT_CONFIRMATION_MODE_LABELS: Record<QuitConfirmationMode, string> = {
@@ -608,6 +614,7 @@ export function useSettingsRestore(onRestored?: () => void) {
         ? ["Diff whitespace changes"]
         : []),
       ...(settings.diffLayout !== DEFAULT_UNIFIED_SETTINGS.diffLayout ? ["Diff layout"] : []),
+      ...(settings.diffEngine !== DEFAULT_UNIFIED_SETTINGS.diffEngine ? ["Diff engine"] : []),
       ...(settings.proactivePanelsEnabled !== DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled
         ? ["Proactive panels"]
         : []),
@@ -695,6 +702,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.diffFilesCollapsed,
       settings.diffIgnoreWhitespace,
       settings.diffLayout,
+      settings.diffEngine,
       settings.proactivePanelsEnabled,
       settings.environmentIdentificationMode,
       settings.contextWindowMeterEnabled,
@@ -806,6 +814,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       diffFilesCollapsed: DEFAULT_UNIFIED_SETTINGS.diffFilesCollapsed,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       diffLayout: DEFAULT_UNIFIED_SETTINGS.diffLayout,
+      diffEngine: DEFAULT_UNIFIED_SETTINGS.diffEngine,
       proactivePanelsEnabled: DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled,
       showSkillsInSlashMenu: DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu,
       composerCollapseOnScroll: DEFAULT_UNIFIED_SETTINGS.composerCollapseOnScroll,
@@ -2714,6 +2723,40 @@ export function GeneralSettingsPanel() {
                 </SelectItem>
                 <SelectItem hideIndicator value="split">
                   {DIFF_LAYOUT_LABELS.split}
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          {...searchableSetting("diff-engine")}
+          description="Render diffs with difftastic for structural, syntax-aware changes. Requires the difft binary on the machine running the server. The toggle in the diff toolbar changes this too."
+          resetAction={
+            settings.diffEngine !== DEFAULT_UNIFIED_SETTINGS.diffEngine ? (
+              <SettingResetButton
+                label="diff engine"
+                onClick={() => updateSettings({ diffEngine: DEFAULT_UNIFIED_SETTINGS.diffEngine })}
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.diffEngine}
+              onValueChange={(value) => {
+                if (value === "standard" || value === "difftastic") {
+                  updateSettings({ diffEngine: value });
+                }
+              }}
+            >
+              <SelectTrigger size="sm" className="w-full sm:w-40" aria-label="Diff engine">
+                <SelectValue>{DIFF_ENGINE_LABELS[settings.diffEngine]}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="standard">
+                  {DIFF_ENGINE_LABELS.standard}
+                </SelectItem>
+                <SelectItem hideIndicator value="difftastic">
+                  {DIFF_ENGINE_LABELS.difftastic}
                 </SelectItem>
               </SelectPopup>
             </Select>

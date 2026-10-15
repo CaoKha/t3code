@@ -1,4 +1,9 @@
-import type { CodeViewItem, DiffLineAnnotation, SelectedLineRange } from "@pierre/diffs";
+import type {
+  CodeViewItem,
+  DiffLineAnnotation,
+  FileDiffMetadata,
+  SelectedLineRange,
+} from "@pierre/diffs";
 import type { CodeViewDiffItem, CodeViewHandle } from "@pierre/diffs/react";
 import type {
   EnvironmentId,
@@ -9,8 +14,10 @@ import type {
   PullRequestReviewPosition,
   PullRequestReviewThread,
   PullRequestThreadCommentsResult,
+  ReviewStructuralDiffTarget,
 } from "@t3tools/contracts";
 import {
+  BracesIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   Columns2Icon,
@@ -49,6 +56,7 @@ import { APP_BASE_NAME } from "~/branding";
 import { PREFERRED_HIGHLIGHTER } from "~/lib/syntaxHighlighting";
 import { cn } from "~/lib/utils";
 import { createPullRequestDiffFileContentsLoader } from "~/lib/diffFileContents";
+import { DifftasticDiffView, type DifftasticViewHandle } from "../diffs/DifftasticDiffView";
 import {
   buildDiffReviewComment,
   resolveDiffReviewPosition,
@@ -223,6 +231,7 @@ function PullRequestCodeTab({
   const effectiveFoldOverride =
     foldOverride ?? (settings.diffFilesCollapsed ? "folded" : "expanded");
   const diffLayout = settings.diffLayout;
+  const diffEngine = settings.diffEngine;
   const updateClientSettings = useUpdateClientSettings();
   const [wordWrap, setWordWrap] = useState(settings.wordWrap);
   const [ignoreWhitespace, setIgnoreWhitespace] = useState(settings.diffIgnoreWhitespace);
@@ -606,6 +615,31 @@ function PullRequestCodeTab({
     [parsedSlices],
   );
   const fileKeys = useMemo(() => items.map((item) => item.id), [items]);
+  const difftasticFiles = useMemo(
+    () =>
+      items.map((item) => ({
+        fileKey: item.id,
+        fileDiff: item.fileDiff,
+        collapsed: item.collapsed === true,
+      })),
+    [items],
+  );
+  const resolveDifftasticTarget = useCallback(
+    (fileDiff: FileDiffMetadata): ReviewStructuralDiffTarget => {
+      const newPath = resolveFileDiffPath(fileDiff);
+      return {
+        _tag: "pullRequest",
+        file: {
+          ...reference,
+          ...(commit === null ? {} : { commit }),
+          changeType: fileDiff.type,
+          oldPath: fileDiff.prevName ?? newPath,
+          newPath,
+        },
+      };
+    },
+    [commit, reference],
+  );
   const collapsedFileKeys = useMemo(
     () => new Set(items.filter((item) => item.collapsed === true).map((item) => item.id)),
     [items],
@@ -670,7 +704,11 @@ function PullRequestCodeTab({
     [effectiveFoldOverride, setViewed],
   );
 
-  const requestTreeReveal = useCodeViewFileReveal(viewer, scopeKey);
+  const [difftasticViewer, setDifftasticViewer] = useState<DifftasticViewHandle | null>(null);
+  const requestTreeReveal = useCodeViewFileReveal(
+    diffEngine === "difftastic" ? difftasticViewer : viewer,
+    scopeKey,
+  );
   const revealFile = useCallback(
     (path: string) => {
       const item = items.find((candidate) => resolveFileDiffPath(candidate.fileDiff) === path);
@@ -1265,6 +1303,14 @@ function PullRequestCodeTab({
             >
               Wrap lines
             </DropdownMenuCheckboxItem>
+            <DropdownMenuCheckboxItem
+              checked={diffEngine === "difftastic"}
+              onCheckedChange={(checked) =>
+                updateClientSettings({ diffEngine: checked ? "difftastic" : "standard" })
+              }
+            >
+              Structural diff (difftastic)
+            </DropdownMenuCheckboxItem>
             <DropdownMenuSeparator />
             <DropdownMenuRadioGroup
               value={diffLayout}
@@ -1284,6 +1330,32 @@ function PullRequestCodeTab({
           </DropdownMenuContent>
         </DropdownMenu>
         <div className="hidden items-center gap-1 @lg:flex">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Toggle
+                  aria-label={
+                    diffEngine === "difftastic"
+                      ? "Use standard diff"
+                      : "Use difftastic structural diff"
+                  }
+                  variant="ghost"
+                  size="sm"
+                  pressed={diffEngine === "difftastic"}
+                  onPressedChange={(pressed) =>
+                    updateClientSettings({ diffEngine: pressed ? "difftastic" : "standard" })
+                  }
+                />
+              }
+            >
+              <BracesIcon className="size-3.5" />
+            </TooltipTrigger>
+            <TooltipPopup side="top">
+              {diffEngine === "difftastic"
+                ? "Use standard diff"
+                : "Use difftastic (structural diff)"}
+            </TooltipPopup>
+          </Tooltip>
           <Tooltip>
             <TooltipTrigger
               render={
@@ -1571,33 +1643,52 @@ function PullRequestCodeTab({
           {/* The viewer virtualizes against the element it is told is scrolling and places its
               rows absolutely, so it has to own that element — the thread diff panel hands it the
               same one. Scrolling from a parent instead leaves it painting over its neighbours. */}
-          <StyledDiffCodeView<ReviewAnnotationGroup>
-            // Keep scrollbar space stable so file metadata and line numbers do not shift as a
-            // diff crosses the overflow boundary. The viewer is itself focusable for keyboard
-            // interaction, but its native host outline clips and competes with the focus
-            // indicators on its actual controls.
-            className="@container h-full overflow-auto [scrollbar-gutter:stable]"
-            containerRef={scrollerRef}
-            viewerRef={setViewer}
-            items={items}
-            selectedLines={selectedLines}
-            onSelectedLinesChange={setSelectedLines}
-            options={diffViewOptions}
-            // The viewer owns the scroll container, so the sentinel that asks for the next slice
-            // has to live inside it — at the end of the files, where reaching it means the reader
-            // is running out of diff.
-            renderCodeViewFooter={renderCodeViewFooter}
-            renderHeaderPrefix={renderHeaderPrefix}
-            renderHeaderMetadata={renderHeaderMetadata}
-            renderAnnotation={renderAnnotation}
-            // Find can ask again before the unfolded file arrives, so this unfolds and never folds.
-            onRevealSearchMatch={(item) =>
-              setToggledFiles((current) =>
-                toggleFileDiffFoldForViewed(item.id, false, effectiveFoldOverride, current),
-              )
-            }
-            unsafeCSSExtra={REPLACE_FILE_COUNTS_CSS}
-          />
+          {diffEngine === "difftastic" ? (
+            // Structural diffs read each file pair from the host; review comments stay in the
+            // standard view, which is the only one with line positions to hang them on.
+            <DifftasticDiffView
+              environmentId={environmentId}
+              files={difftasticFiles}
+              resolveTarget={resolveDifftasticTarget}
+              // The head commit pins the contents; hosts that omit it fall back to the last update.
+              cacheKey={`pr:${referenceKey}:${commit ?? "all"}:${detail.headSha ?? detail.updatedAt}`}
+              layout={diffLayout}
+              wordWrap={wordWrap}
+              onToggleCollapsed={toggleFile}
+              // The tab collapses its header as this scrolls, and reveals files through the handle.
+              containerRef={scrollerRef}
+              viewerRef={setDifftasticViewer}
+              footer={renderCodeViewFooter()}
+            />
+          ) : (
+            <StyledDiffCodeView<ReviewAnnotationGroup>
+              // Keep scrollbar space stable so file metadata and line numbers do not shift as a
+              // diff crosses the overflow boundary. The viewer is itself focusable for keyboard
+              // interaction, but its native host outline clips and competes with the focus
+              // indicators on its actual controls.
+              className="@container h-full overflow-auto [scrollbar-gutter:stable]"
+              containerRef={scrollerRef}
+              viewerRef={setViewer}
+              items={items}
+              selectedLines={selectedLines}
+              onSelectedLinesChange={setSelectedLines}
+              options={diffViewOptions}
+              // The viewer owns the scroll container, so the sentinel that asks for the next slice
+              // has to live inside it — at the end of the files, where reaching it means the reader
+              // is running out of diff.
+              renderCodeViewFooter={renderCodeViewFooter}
+              renderHeaderPrefix={renderHeaderPrefix}
+              renderHeaderMetadata={renderHeaderMetadata}
+              renderAnnotation={renderAnnotation}
+              // Find can ask again before the unfolded file arrives, so this unfolds and never folds.
+              onRevealSearchMatch={(item) =>
+                setToggledFiles((current) =>
+                  toggleFileDiffFoldForViewed(item.id, false, effectiveFoldOverride, current),
+                )
+              }
+              unsafeCSSExtra={REPLACE_FILE_COUNTS_CSS}
+            />
+          )}
         </div>
         {fileTreeOpen ? (
           <aside className="flex w-[min(20rem,40%)] min-w-48 shrink-0 border-l border-border/60">
