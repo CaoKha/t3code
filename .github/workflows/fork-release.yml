@@ -1,0 +1,259 @@
+# Builds this fork on every push to its branch and publishes the binaries as a GitHub
+# release, which remote servers install from. It then points the fixed `channel` release's
+# latest.json at the new build; the desktop app's update button reads that file through a
+# release download URL, which the GitHub API rate limit does not cover.
+#
+# Version: <upstream nightly base>-nightly.<UTC date>.<10000 + run number>. It keeps the
+# nightly format (the app name, keychain entry and update channel depend on it) and always
+# sorts after the upstream nightly it was built from. Ordering assumes the run number only
+# grows: it does for this workflow file, but renaming or recreating the workflow restarts
+# it, so a same-day build could then sort before an older one.
+name: Fork release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: pingdotgg/t3code
+  CHANNEL_TAG: channel
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - name: Resolve version
+        id: version
+        run: |
+          set -euo pipefail
+          upstream="https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch --quiet --tags "$upstream"
+          # The newest upstream nightly this commit contains. This fork's own release tags
+          # share the pattern, so candidates come from upstream's tag list.
+          base_tag=""
+          for tag in $(git ls-remote --tags --refs "$upstream" 'v*-nightly.*' | sed 's|.*refs/tags/||' | sort -rV); do
+            if git merge-base --is-ancestor "$tag" HEAD; then base_tag="$tag"; break; fi
+          done
+          [ -n "$base_tag" ] || { echo "No upstream nightly in this history." >&2; exit 1; }
+          base="${base_tag#v}"
+          base="${base%%-*}"
+          version="${base}-nightly.$(date -u +%Y%m%d).$((10000 + GITHUB_RUN_NUMBER))"
+          echo "Building ${version} from ${GITHUB_SHA} (upstream ${base_tag})"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+  macos:
+    needs: version
+    runs-on: macos-15
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+      - run: node scripts/update-release-package-versions.ts "$VERSION"
+      - name: Build desktop app
+        # Baked into the app: it updates from this repository's `channel` release
+        # (ForkReleaseUpdater). GITHUB_REPOSITORY also gives the app its app-update.yml,
+        # which tells the app an update feed is configured.
+        env:
+          T3CODE_FORK_RELEASE_REPOSITORY: ${{ github.repository }}
+        run: >-
+          node scripts/build-desktop-artifact.ts
+          --platform mac --arch arm64 --target zip
+          --build-version "$VERSION" --output-dir release
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: desktop-mac-arm64
+          path: release/*.zip
+          if-no-files-found: error
+
+  linux-cli:
+    needs: version
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+      - run: node scripts/update-release-package-versions.ts "$VERSION"
+      - name: Build web client and server bundle
+        run: |
+          vp run --filter @t3tools/web build
+          node apps/server/scripts/cli.ts build
+      - name: Build server single-executable
+        env:
+          T3CODE_PACK_EXE_TARGET: linux-x64
+          # The single-executable needs a host Node with --build-sea (25.7+). The exact
+          # version, as upstream's release-desktop.yml: vp downloads it from nodejs.org/dist.
+          # Keep in step with SEA_NODE_VERSION in apps/server/vite.config.ts.
+          VP_NODE_VERSION: "26.8.2"
+        run: node apps/server/scripts/cli.ts build-exe --verbose
+      - name: Build resource monitor
+        run: |
+          cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml
+          mkdir -p "$RUNNER_TEMP/resource-monitor/linux-x64"
+          cp native/resource-monitor/target/release/t3-resource-monitor "$RUNNER_TEMP/resource-monitor/linux-x64/"
+      - name: Build CLI archive
+        run: >-
+          node scripts/build-cli-archive.ts
+          --platform linux --arch x64 --version "$VERSION"
+          --resource-monitor-dir "$RUNNER_TEMP/resource-monitor" --output-dir release-cli
+      - name: Smoke-test CLI archive
+        run: >-
+          node scripts/smoke-cli-archive.ts
+          --archive "release-cli/t3-${VERSION}-linux-x64.tar.gz" --expect-version "$VERSION"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cli-linux-x64
+          path: release-cli/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [version, macos, linux-cli]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: v${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Skip superseded builds
+        id: current
+        run: |
+          set -euo pipefail
+          head="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${GITHUB_REF_NAME}" --jq .commit.sha)"
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            # Pushes touching only Markdown start no build, so this one is still the
+            # newest unless code changed since.
+            changed="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${GITHUB_SHA}...${head}" \
+              --jq '[.files[].filename | select(endswith(".md") | not)] | length')"
+            if [ "$changed" != "0" ]; then
+              echo "${GITHUB_REF_NAME} has moved on to ${head}; its own run publishes."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        if: steps.current.outputs.skip == 'false'
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Publish release
+        if: steps.current.outputs.skip == 'false'
+        working-directory: assets
+        run: |
+          set -euo pipefail
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+          tag_exists() {
+            gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1 ||
+              gh release view "$TAG" >/dev/null 2>&1
+          }
+          if tag_exists; then
+            echo "::error::${TAG} already exists; not replacing it."
+            exit 1
+          fi
+          # The releases API occasionally answers 403 for a moment; retry the create, but
+          # never touch a release or tag that an attempt already made.
+          for attempt in 1 2 3 4; do
+            if gh release create "$TAG" ./* \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "T3 Code fork ${VERSION}" \
+              --notes "Built from ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}."; then
+              break
+            fi
+            if tag_exists; then
+              echo "::error::Creating ${TAG} failed part-way; inspect it before rerunning."
+              exit 1
+            fi
+            [ "$attempt" -lt 4 ] || exit 1
+            sleep $((attempt * 20))
+          done
+
+      - name: Update the channel release
+        if: steps.current.outputs.skip == 'false'
+        working-directory: assets
+        run: |
+          set -euo pipefail
+          one() {
+            local matches=()
+            for file in $1; do [ -f "$file" ] && matches+=("$file"); done
+            [ "${#matches[@]}" -eq 1 ] || { echo "Expected one $1, found ${#matches[@]}." >&2; exit 1; }
+            echo "${matches[0]}"
+          }
+          mac="$(one '*-arm64.zip')"
+          cli="$(one '*-linux-x64.tar.gz')"
+          base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          asset() {
+            jq -nc --arg name "$1" --arg url "${base}/$1" \
+              --arg sha256 "$(sha256sum "$1" | cut -d' ' -f1)" \
+              '{name: $name, url: $url, sha256: $sha256}'
+          }
+          jq -n --arg version "$VERSION" --arg tag "$TAG" --arg commit "$GITHUB_SHA" \
+            --argjson mac "$(asset "$mac")" --argjson cli "$(asset "$cli")" \
+            '{version: $version, tag: $tag, commit: $commit, assets: {"darwin-arm64": $mac, "linux-x64": $cli}}' \
+            > latest.json
+          cat latest.json
+          if ! gh release view "$CHANNEL_TAG" >/dev/null 2>&1; then
+            gh release create "$CHANNEL_TAG" --target "$GITHUB_SHA" --prerelease \
+              --title "Fork update channel" \
+              --notes "latest.json names the newest fork build; upstream-status.json reports the last upstream sync. CI keeps both current." ||
+              gh release view "$CHANNEL_TAG" >/dev/null
+          fi
+          gh release upload "$CHANNEL_TAG" latest.json --clobber
+
+      - name: Prune old releases
+        if: steps.current.outputs.skip == 'false'
+        # Keep the newest 10 fork builds; the update button only needs the latest. Only
+        # version tags match, never the `channel` release.
+        run: |
+          set -euo pipefail
+          gh release list --limit 200 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | test("^v.*-nightly\\."))] | sort_by(.createdAt) | reverse | .[10:] | .[].tagName' |
+            while read -r tag; do
+              gh release delete "$tag" --cleanup-tag --yes
+            done
