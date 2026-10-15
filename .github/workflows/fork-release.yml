@@ -35,8 +35,15 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          git fetch --quiet --tags "https://github.com/${UPSTREAM_REPOSITORY}.git"
-          base_tag="$(git describe --tags --abbrev=0 --match 'v*-nightly.*' HEAD)"
+          upstream="https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch --quiet --tags "$upstream"
+          # The newest upstream nightly this commit contains. This fork's own release tags
+          # share the pattern, so candidates come from upstream's tag list.
+          base_tag=""
+          for tag in $(git ls-remote --tags --refs "$upstream" 'v*-nightly.*' | sed 's|.*refs/tags/||' | sort -rV); do
+            if git merge-base --is-ancestor "$tag" HEAD; then base_tag="$tag"; break; fi
+          done
+          [ -n "$base_tag" ] || { echo "No upstream nightly in this history." >&2; exit 1; }
           base="${base_tag#v}"
           base="${base%%-*}"
           version="${base}-nightly.$(date -u +%Y%m%d).$((10000 + GITHUB_RUN_NUMBER))"

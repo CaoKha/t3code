@@ -40,10 +40,10 @@ jobs:
         id: upstream
         run: |
           set -euo pipefail
-          git fetch --quiet --tags "https://github.com/${UPSTREAM_REPOSITORY}.git"
-          # Read the whole list: `| head -n 1` would SIGPIPE git under pipefail.
-          tags="$(git tag --list 'v*-nightly.*' --sort=-version:refname)"
-          tag="${tags%%$'\n'*}"
+          upstream="https://github.com/${UPSTREAM_REPOSITORY}.git"
+          # Ask upstream directly: this fork's own releases use the same tag pattern.
+          tag="$(git ls-remote --tags --refs "$upstream" 'v*-nightly.*' | sed 's|.*refs/tags/||' | sort -V | tail -n 1)"
+          git fetch --quiet "$upstream" "refs/tags/${tag}:refs/tags/${tag}"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           if git merge-base --is-ancestor "$tag" HEAD; then
             echo "Already contains ${tag}."
