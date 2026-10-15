@@ -1,7 +1,12 @@
 import type { ReviewStructuralDiffResult } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildDifftasticRows, segmentLine, stackDifftasticRows } from "./difftasticRows";
+import {
+  buildDifftasticRows,
+  segmentLine,
+  stackDifftasticRows,
+  toSyntaxLines,
+} from "./difftasticRows";
 
 const lines = (count: number, prefix: string) =>
   Array.from({ length: count }, (_, index) => `${prefix}${index}`).join("\n");
@@ -92,10 +97,42 @@ describe("segmentLine", () => {
     ]);
   });
 
+  it("keeps syntax colors and splits them at change boundaries", () => {
+    expect(
+      segmentLine(
+        "let x = 1;",
+        [{ start: 4, end: 5 }],
+        [
+          { start: 0, end: 3, color: "#c00" },
+          { start: 3, end: 10, color: "#111" },
+        ],
+      ),
+    ).toEqual([
+      { start: 0, text: "let", novel: false, color: "#c00" },
+      { start: 3, text: " ", novel: false, color: "#111" },
+      { start: 4, text: "x", novel: true, color: "#111" },
+      { start: 5, text: " = 1;", novel: false, color: "#111" },
+    ]);
+  });
+
   it("clamps ranges past the end of the line", () => {
     expect(segmentLine("ab", [{ start: 1, end: 9 }])).toEqual([
       { start: 0, text: "a", novel: false },
       { start: 1, text: "b", novel: true },
+    ]);
+  });
+});
+
+describe("toSyntaxLines", () => {
+  it("positions tokens within their line", () => {
+    expect(
+      toSyntaxLines([[{ content: "const", color: "#a" }, { content: " x" }], [{ content: "y" }]]),
+    ).toEqual([
+      [
+        { start: 0, end: 5, color: "#a" },
+        { start: 5, end: 7 },
+      ],
+      [{ start: 0, end: 1 }],
     ]);
   });
 });

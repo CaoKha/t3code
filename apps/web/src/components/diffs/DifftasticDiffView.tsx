@@ -1,18 +1,32 @@
-import type { FileDiffMetadata } from "@pierre/diffs";
+import { getFiletypeFromFileName, type FileDiffMetadata } from "@pierre/diffs";
 import type { EnvironmentId, ReviewStructuralDiffTarget } from "@t3tools/contracts";
 import { ChevronRightIcon } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import {
+  createContext,
+  memo,
+  use,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+} from "react";
 
 import { cn } from "~/lib/utils";
 import {
   buildDifftasticRows,
   segmentLine,
   stackDifftasticRows,
+  toSyntaxLines,
+  type DifftasticSegment,
+  type DifftasticSyntaxToken,
   type DifftasticGapRow,
   type DifftasticLineRow,
   type DifftasticSide,
 } from "~/lib/difftasticRows";
-import { getDiffLineStat, resolveFileDiffPath } from "~/lib/diffRendering";
+import { getDiffLineStat, resolveDiffThemeName, resolveFileDiffPath } from "~/lib/diffRendering";
+import { getSyntaxHighlighterPromise } from "~/lib/syntaxHighlighting";
+import { useTheme } from "~/hooks/useTheme";
 import { useEnvironmentQuery } from "~/state/query";
 import { reviewEnvironment } from "~/state/review";
 import { DiffFilePathCopyButton } from "../DiffFilePathCopyButton";
@@ -154,6 +168,51 @@ const DifftasticFileSection = memo(function DifftasticFileSection({
   );
 });
 
+/** Larger files render without syntax colors rather than block on tokenizing. */
+const MAX_HIGHLIGHT_CHARS = 400_000;
+
+type SyntaxLines = ReadonlyArray<ReadonlyArray<DifftasticSyntaxToken>>;
+
+const SyntaxContext = createContext<{
+  readonly old: SyntaxLines | null;
+  readonly new: SyntaxLines | null;
+}>({ old: null, new: null });
+
+/**
+ * Tokenizes a whole file with the theme the standard diff uses, so multi-line
+ * constructs (strings, comments) color correctly. Renders plain until ready.
+ */
+function useSyntaxLines(contents: string, filePath: string): SyntaxLines | null {
+  const { resolvedTheme } = useTheme();
+  const key = `${resolvedTheme}:${filePath}:${contents}`;
+  const [highlighted, setHighlighted] = useState<{
+    readonly key: string;
+    readonly lines: SyntaxLines;
+  } | null>(null);
+  useEffect(() => {
+    if (contents.length === 0 || contents.length > MAX_HIGHLIGHT_CHARS) return;
+    let cancelled = false;
+    const language = getFiletypeFromFileName(filePath);
+    void getSyntaxHighlighterPromise(language)
+      .then((highlighter) => {
+        if (cancelled) return;
+        const { tokens } = highlighter.codeToTokens(contents, {
+          lang: highlighter.getLoadedLanguages().includes(language) ? language : "text",
+          theme: resolveDiffThemeName(resolvedTheme),
+        });
+        setHighlighted({
+          key: `${resolvedTheme}:${filePath}:${contents}`,
+          lines: toSyntaxLines(tokens),
+        });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [contents, filePath, resolvedTheme]);
+  return highlighted?.key === key ? highlighted.lines : null;
+}
+
 function DifftasticNotice({ children }: { readonly children: React.ReactNode }) {
   return <p className="px-3 py-2 text-2xs text-muted-foreground">{children}</p>;
 }
@@ -176,6 +235,10 @@ function DifftasticFileBody({
   );
   const [expandedGapIds, setExpandedGapIds] = useState<ReadonlySet<number>>(() => new Set());
   const result = query.data;
+  const filePath = target._tag === "git" ? target.file.newPath : target.newPath;
+  const oldSyntax = useSyntaxLines(result?.oldContents ?? "", filePath);
+  const newSyntax = useSyntaxLines(result?.newContents ?? "", filePath);
+  const syntax = useMemo(() => ({ old: oldSyntax, new: newSyntax }), [newSyntax, oldSyntax]);
   const rows = useMemo(
     () => (result?.status === "changed" ? buildDifftasticRows(result, expandedGapIds) : []),
     [expandedGapIds, result],
@@ -217,11 +280,13 @@ function DifftasticFileBody({
       {result.language ? (
         <div className="px-3 pt-1 text-2xs text-muted-foreground/70">{result.language}</div>
       ) : null}
-      {layout === "split" ? (
-        <SplitRows rows={rows} onExpandGap={expandGap} />
-      ) : (
-        <StackedRows rows={rows} wordWrap={wordWrap} onExpandGap={expandGap} />
-      )}
+      <SyntaxContext value={syntax}>
+        {layout === "split" ? (
+          <SplitRows rows={rows} onExpandGap={expandGap} />
+        ) : (
+          <StackedRows rows={rows} wordWrap={wordWrap} onExpandGap={expandGap} />
+        )}
+      </SyntaxContext>
     </div>
   );
 }
@@ -247,27 +312,36 @@ function GapRow({
 const LINE_NUMBER_CLASS =
   "w-12 shrink-0 select-none pe-2 text-end tabular-nums text-muted-foreground/50";
 
+function segmentStyle(segment: Pick<DifftasticSegment, "color" | "fontStyle">) {
+  const fontStyle = segment.fontStyle ?? 0;
+  return {
+    ...(segment.color ? { color: segment.color } : {}),
+    ...(fontStyle & 1 ? { fontStyle: "italic" } : {}),
+    ...(fontStyle & 2 ? { fontWeight: 700 } : {}),
+    ...(fontStyle & 4 ? { textDecoration: "underline" } : {}),
+  } as const;
+}
+
 function LineText({ side, tone }: { readonly side: DifftasticSide; readonly tone: "old" | "new" }) {
-  const segments = segmentLine(side.text, side.changes);
+  const syntax = use(SyntaxContext)[tone];
+  const segments = segmentLine(side.text, side.changes, syntax?.[side.lineNumber]);
   return (
     <>
-      {segments.map((segment) =>
-        segment.novel ? (
-          <span
-            key={segment.start}
-            className={cn(
-              "rounded-xs",
-              tone === "old"
-                ? "bg-diff-deletion/25 text-diff-deletion-foreground"
-                : "bg-diff-addition/25 text-diff-addition-foreground",
-            )}
-          >
-            {segment.text}
-          </span>
-        ) : (
-          <span key={segment.start}>{segment.text}</span>
-        ),
-      )}
+      {segments.map((segment) => (
+        <span
+          key={segment.start}
+          style={segmentStyle(segment)}
+          className={cn(
+            // Changed tokens keep their syntax color and gain the diff tint, like the standard view.
+            segment.novel &&
+              (tone === "old"
+                ? "rounded-xs bg-diff-deletion/30"
+                : "rounded-xs bg-diff-addition/30"),
+          )}
+        >
+          {segment.text}
+        </span>
+      ))}
       {side.text.length === 0 ? "​" : null}
     </>
   );

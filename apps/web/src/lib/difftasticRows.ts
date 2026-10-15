@@ -129,24 +129,84 @@ export function stackDifftasticRows(
   return output;
 }
 
-/** Splits a line into plain and highlighted segments for rendering. */
+/** A syntax-highlighted token, positioned within its line. */
+export interface DifftasticSyntaxToken {
+  readonly start: number;
+  readonly end: number;
+  readonly color?: string | undefined;
+  readonly fontStyle?: number | undefined;
+}
+
+export interface DifftasticSegment {
+  readonly start: number;
+  readonly text: string;
+  /** Inside a token difftastic reports as changed. */
+  readonly novel: boolean;
+  readonly color?: string | undefined;
+  readonly fontStyle?: number | undefined;
+}
+
+/**
+ * Splits a line at both difftastic change boundaries and syntax token
+ * boundaries, so each segment has one change state and one syntax style.
+ */
 export function segmentLine(
   text: string,
   changes: ReadonlyArray<DifftasticRange>,
-): Array<{ readonly start: number; readonly text: string; readonly novel: boolean }> {
-  const segments: Array<{ start: number; text: string; novel: boolean }> = [];
-  let cursor = 0;
-  for (const change of changes) {
-    const start = Math.max(cursor, Math.min(change.start, text.length));
-    const end = Math.max(start, Math.min(change.end, text.length));
-    if (start > cursor) {
-      segments.push({ start: cursor, text: text.slice(cursor, start), novel: false });
-    }
-    if (end > start) segments.push({ start, text: text.slice(start, end), novel: true });
-    cursor = end;
+  tokens: ReadonlyArray<DifftasticSyntaxToken> = [],
+): Array<DifftasticSegment> {
+  const clamp = (value: number) => Math.max(0, Math.min(value, text.length));
+  const boundaries = new Set([0, text.length]);
+  for (const range of [...changes, ...tokens]) {
+    boundaries.add(clamp(range.start));
+    boundaries.add(clamp(range.end));
   }
-  if (cursor < text.length) {
-    segments.push({ start: cursor, text: text.slice(cursor), novel: false });
+  const points = [...boundaries].toSorted((left, right) => left - right);
+
+  const segments: Array<DifftasticSegment> = [];
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index]!;
+    const end = points[index + 1]!;
+    if (end <= start) continue;
+    const novel = changes.some((change) => change.start <= start && start < change.end);
+    const token = tokens.find((candidate) => candidate.start <= start && start < candidate.end);
+    const previous = segments.at(-1);
+    if (
+      previous &&
+      previous.novel === novel &&
+      previous.color === token?.color &&
+      previous.fontStyle === token?.fontStyle
+    ) {
+      segments[segments.length - 1] = { ...previous, text: previous.text + text.slice(start, end) };
+      continue;
+    }
+    segments.push({
+      start,
+      text: text.slice(start, end),
+      novel,
+      ...(token?.color === undefined ? {} : { color: token.color }),
+      ...(token?.fontStyle === undefined ? {} : { fontStyle: token.fontStyle }),
+    });
   }
   return segments;
+}
+
+/** Turns Shiki's per-line tokens into line-relative ranges. */
+export function toSyntaxLines(
+  lines: ReadonlyArray<
+    ReadonlyArray<{
+      readonly content: string;
+      readonly color?: string;
+      readonly fontStyle?: number;
+    }>
+  >,
+): Array<Array<DifftasticSyntaxToken>> {
+  return lines.map((line) => {
+    let cursor = 0;
+    return line.map((token) => {
+      const start = cursor;
+      cursor += token.content.length;
+      return { start, end: cursor, color: token.color, fontStyle: token.fontStyle };
+    });
+  });
 }
