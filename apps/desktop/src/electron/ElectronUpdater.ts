@@ -1,10 +1,13 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
 import { autoUpdater } from "electron-updater";
+
+import * as SourceBuildUpdater from "./SourceBuildUpdater.ts";
 
 type AutoUpdater = typeof autoUpdater;
 
@@ -14,11 +17,16 @@ export class ElectronUpdaterCheckForUpdatesError extends Schema.TaggedError<Elec
   "ElectronUpdaterCheckForUpdatesError",
   {
     channel: Schema.NullOr(Schema.String),
+    /** A message written for the user, which replaces the generic one. */
+    detail: Schema.optional(Schema.String),
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    return `Electron updater failed to check for updates on channel ${this.channel ?? "default"}.`;
+    return (
+      this.detail ??
+      `Electron updater failed to check for updates on channel ${this.channel ?? "default"}.`
+    );
   }
 }
 
@@ -26,11 +34,16 @@ export class ElectronUpdaterDownloadUpdateError extends Schema.TaggedError<Elect
   "ElectronUpdaterDownloadUpdateError",
   {
     channel: Schema.NullOr(Schema.String),
+    /** A message written for the user, which replaces the generic one. */
+    detail: Schema.optional(Schema.String),
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    return `Electron updater failed to download the update on channel ${this.channel ?? "default"}.`;
+    return (
+      this.detail ??
+      `Electron updater failed to download the update on channel ${this.channel ?? "default"}.`
+    );
   }
 }
 
@@ -73,6 +86,8 @@ export class ElectronUpdater extends Context.Service<
       readonly isSilent: boolean;
       readonly isForceRunAfter: boolean;
     }) => Effect.Effect<void, ElectronUpdaterQuitAndInstallError>;
+    /** True when the updater brings its own feed instead of reading app-update.yml. */
+    readonly selfConfigured?: boolean;
     readonly on: <Args extends ReadonlyArray<unknown>>(
       eventName: string,
       listener: (...args: Args) => void,
@@ -170,3 +185,12 @@ export const make = ElectronUpdater.of({
 });
 
 export const layer = Layer.succeed(ElectronUpdater, make);
+
+/** Builds from a fork (see SourceBuildUpdater) update from source; everything else uses electron-updater. */
+export const layerWithSourceBuild = Layer.effect(
+  ElectronUpdater,
+  Effect.gen(function* () {
+    const sourceBuild = yield* SourceBuildUpdater.readSourceBuildConfig;
+    return Option.isSome(sourceBuild) ? yield* SourceBuildUpdater.make(sourceBuild.value) : make;
+  }),
+);

@@ -414,7 +414,12 @@ export const make = Effect.gen(function* () {
       : false;
 
   const hasUpdateFeedConfig = Ref.get(appUpdateYmlConfigRef).pipe(
-    Effect.map((appUpdateYmlConfig) => Option.isSome(appUpdateYmlConfig) || config.mockUpdates),
+    Effect.map(
+      (appUpdateYmlConfig) =>
+        Option.isSome(appUpdateYmlConfig) ||
+        config.mockUpdates ||
+        electronUpdater.selfConfigured === true,
+    ),
   );
 
   const resolveDisabledReason = Effect.gen(function* () {

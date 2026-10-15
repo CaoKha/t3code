@@ -137,7 +137,12 @@ const layerElectron = Layer.mergeAll(
   ElectronSafeStorage.layer,
   ElectronShell.layer,
   ElectronTheme.layer,
-  ElectronUpdater.layer,
+  // Source builds read their marker file, query GitHub releases and run the fork's build script.
+  ElectronUpdater.layerWithSourceBuild.pipe(
+    Layer.provide(
+      Layer.mergeAll(ElectronApp.layer, NodeServices.layer, NodeHttpClient.layerUndici),
+    ),
+  ),
   ElectronWindow.layer,
   DesktopIpc.layer(Electron.ipcMain),
 );
