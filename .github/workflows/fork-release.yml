@@ -58,10 +58,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: node scripts/update-release-package-versions.ts "$VERSION"
       - name: Build desktop app
-        # GITHUB_REPOSITORY would give the app an electron-updater feed; this fork's app
-        # updates itself from these releases instead (see SourceBuildUpdater).
+        # Baked into the app: it updates from this repository's releases (ForkReleaseUpdater),
+        # which takes precedence over the electron-updater feed GITHUB_REPOSITORY implies.
         env:
-          GITHUB_REPOSITORY: ""
           T3CODE_FORK_RELEASE_REPOSITORY: ${{ github.repository }}
         run: >-
           pnpm exec node scripts/build-desktop-artifact.ts
