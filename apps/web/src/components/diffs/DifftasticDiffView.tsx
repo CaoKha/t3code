@@ -80,7 +80,7 @@ export function DifftasticDiffView({
   }, [selectedFileKey, revealRequestId]);
 
   return (
-    <div ref={scrollRef} className="h-full min-h-0 overflow-auto bg-background">
+    <div ref={scrollRef} className="difftastic-surface h-full min-h-0 overflow-auto">
       {files.map((file) => (
         <DifftasticFileSection
           key={file.fileKey}
@@ -125,7 +125,7 @@ const DifftasticFileSection = memo(function DifftasticFileSection({
   return (
     <section data-file-key={file.fileKey} className="border-b border-border/70">
       <header
-        className="sticky top-0 z-10 flex h-9 items-center gap-1.5 border-b border-border/60 bg-background/95 px-2 text-xs backdrop-blur-sm"
+        className="sticky top-0 z-10 flex h-9 items-center gap-1.5 border-b border-border/60 bg-code px-2 font-sans text-xs"
         onContextMenu={(event) => onFileContextMenu(filePath, event)}
       >
         <Button
@@ -141,7 +141,7 @@ const DifftasticFileSection = memo(function DifftasticFileSection({
         </Button>
         <button
           type="button"
-          className="min-w-0 truncate font-mono text-foreground hover:underline"
+          className="min-w-0 truncate font-mono text-code-foreground hover:underline"
           onClick={() => onOpenFile(filePath)}
         >
           {file.fileDiff.prevName && file.fileDiff.prevName !== filePath
@@ -273,7 +273,7 @@ function DifftasticFileBody({
   return (
     <div
       className={cn(
-        "difftastic-surface bg-code font-mono leading-5",
+        "difftastic-code font-mono leading-5",
         !wordWrap && layout === "stacked" && "overflow-x-auto",
       )}
     >
@@ -301,7 +301,8 @@ function GapRow({
   return (
     <button
       type="button"
-      className="block w-full bg-muted/40 px-3 py-0.5 text-start font-sans text-2xs text-muted-foreground hover:bg-muted/70"
+      data-dt-gap
+      className="block w-full px-3 py-0.5 text-start font-sans text-2xs text-muted-foreground"
       onClick={() => onExpandGap(row.id)}
     >
       ⋯ {row.hiddenCount} unchanged {row.hiddenCount === 1 ? "line" : "lines"}
@@ -331,13 +332,10 @@ function LineText({ side, tone }: { readonly side: DifftasticSide; readonly tone
         <span
           key={segment.start}
           style={segmentStyle(segment)}
-          className={cn(
-            // Changed tokens keep their syntax color and gain the diff tint, like the standard view.
-            segment.novel &&
-              (tone === "old"
-                ? "rounded-xs bg-diff-deletion/30"
-                : "rounded-xs bg-diff-addition/30"),
-          )}
+          // Changed tokens keep their syntax color and gain the diff emphasis, like the standard view.
+          {...(segment.novel
+            ? { "data-dt-novel": tone === "old" ? "deletion" : "addition", className: "rounded-xs" }
+            : {})}
         >
           {segment.text}
         </span>
@@ -357,17 +355,17 @@ function SplitCell({
   readonly changed: boolean;
 }) {
   if (side === null) {
-    return <div className="flex min-w-0 flex-1 bg-muted/30" />;
+    return <div data-dt-empty className="flex min-w-0 flex-1" />;
   }
   const novel = changed && (side.changes.length > 0 || side.text.length === 0);
   return (
     <div
-      className={cn(
-        "flex min-w-0 flex-1",
-        novel && (tone === "old" ? "bg-diff-deletion/8" : "bg-diff-addition/8"),
-      )}
+      className="flex min-w-0 flex-1"
+      {...(novel ? { "data-dt-line": tone === "old" ? "deletion" : "addition" } : {})}
     >
-      <span className={LINE_NUMBER_CLASS}>{side.lineNumber + 1}</span>
+      <span data-dt-gutter className={LINE_NUMBER_CLASS}>
+        {side.lineNumber + 1}
+      </span>
       <span className="min-w-0 flex-1 pe-2 break-all whitespace-pre-wrap">
         <LineText side={side} tone={tone} />
       </span>
@@ -423,16 +421,15 @@ function StackedRows({
         return (
           <div
             key={`${side}:${row.old?.lineNumber ?? "-"}:${row.new?.lineNumber ?? "-"}`}
-            className={cn(
-              "flex",
-              side === "old" && "bg-diff-deletion/8",
-              side === "new" && "bg-diff-addition/8",
-            )}
+            className="flex"
+            {...(side === "both"
+              ? {}
+              : { "data-dt-line": side === "old" ? "deletion" : "addition" })}
           >
-            <span className={LINE_NUMBER_CLASS}>
+            <span data-dt-gutter className={LINE_NUMBER_CLASS}>
               {side !== "new" && row.old ? row.old.lineNumber + 1 : ""}
             </span>
-            <span className={LINE_NUMBER_CLASS}>
+            <span data-dt-gutter className={LINE_NUMBER_CLASS}>
               {side !== "old" && row.new ? row.new.lineNumber + 1 : ""}
             </span>
             <span
