@@ -19,9 +19,18 @@ export interface EnvironmentQueryView<A, E = unknown> {
 
 export function formatEnvironmentQueryError(cause: Cause.Cause<unknown>): string {
   const error = Cause.squash(cause);
-  return error instanceof Error && error.message.trim().length > 0
-    ? error.message
-    : "The environment request failed.";
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "object" && error !== null && "message" in error
+        ? String(error.message)
+        : "";
+  // A server older than this client rejects RPC methods it does not know.
+  const unknownMethod = /Unknown request tag: (\S+)/.exec(`${message}\n${Cause.pretty(cause)}`);
+  if (unknownMethod) {
+    return `This environment's T3 server does not support ${unknownMethod[1]}. Update it to a version that includes it.`;
+  }
+  return message.trim().length > 0 ? message : "The environment request failed.";
 }
 
 export function useEnvironmentQuery<A, E>(
