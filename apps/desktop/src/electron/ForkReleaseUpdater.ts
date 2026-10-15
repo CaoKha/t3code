@@ -148,7 +148,8 @@ type Listener = (...args: Array<unknown>) => void;
 export const make = Effect.fn("ForkReleaseUpdater.make")(function* (repository: string) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const httpClient = yield* HttpClient.HttpClient;
+  // Release asset URLs answer with a redirect to GitHub's download CDN.
+  const httpClient = (yield* HttpClient.HttpClient).pipe(HttpClient.followRedirects(5));
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const electronApp = yield* ElectronApp.ElectronApp;
   const appVersion = (yield* electronApp.metadata.pipe(Effect.orDie)).appVersion;
