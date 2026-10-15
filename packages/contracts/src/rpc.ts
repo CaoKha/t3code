@@ -148,6 +148,9 @@ import {
   ReviewDiffPreviewError,
   ReviewDiffPreviewInput,
   ReviewDiffPreviewResult,
+  ReviewStructuralDiffError,
+  ReviewStructuralDiffInput,
+  ReviewStructuralDiffResult,
 } from "./review.ts";
 import { KeybindingsConfigError } from "./keybindings.ts";
 import {
@@ -438,6 +441,7 @@ export const WS_METHODS = {
   // Review methods
   reviewGetDiffPreview: "review.getDiffPreview",
   reviewGetDiffFileContents: "review.getDiffFileContents",
+  reviewGetStructuralDiff: "review.getStructuralDiff",
 
   // Terminal methods
   terminalOpen: "terminal.open",
@@ -1447,6 +1451,12 @@ const WsReviewGetDiffFileContentsRpc = Rpc.make(WS_METHODS.reviewGetDiffFileCont
   error: Schema.Union([ReviewDiffPreviewError, EnvironmentAuthorizationError]),
 });
 
+const WsReviewGetStructuralDiffRpc = Rpc.make(WS_METHODS.reviewGetStructuralDiff, {
+  payload: ReviewStructuralDiffInput,
+  success: ReviewStructuralDiffResult,
+  error: Schema.Union([ReviewStructuralDiffError, EnvironmentAuthorizationError]),
+});
+
 const WsTerminalOpenRpc = Rpc.make(WS_METHODS.terminalOpen, {
   payload: TerminalOpenInput,
   success: TerminalSessionSnapshot,
@@ -2018,6 +2028,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsInitRpc,
   WsReviewGetDiffPreviewRpc,
   WsReviewGetDiffFileContentsRpc,
+  WsReviewGetStructuralDiffRpc,
   WsTerminalOpenRpc,
   WsTerminalAttachRpc,
   WsTerminalObserveRpc,

@@ -430,6 +430,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["stacked split side by side unified inline view"],
   },
   {
+    id: "diff-engine",
+    title: "Diff engine",
+    to: "/settings/general",
+    searchTerms: ["difftastic difft structural syntax aware standard git"],
+  },
+  {
     id: "proactive-panels",
     title: "Proactive panels",
     to: "/settings/general",

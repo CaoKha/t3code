@@ -1714,6 +1714,11 @@ code {
   font-size: var(--font-size-code, inherit);
 }
 
+/* The difftastic diff view renders plain DOM, so it reads the code size directly. */
+.difftastic-surface {
+  font-size: var(--font-size-code, inherit);
+}
+
 /* @pierre/diffs surfaces (diffs, file previews, annotatable code, search
    lines) render inside shadow roots but consult these hooks with their own
    literal stacks as fallback. Custom properties inherit across the shadow

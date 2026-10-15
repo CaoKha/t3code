@@ -1,0 +1,152 @@
+import type { ReviewStructuralDiffResult } from "@t3tools/contracts";
+
+export interface DifftasticRange {
+  readonly start: number;
+  readonly end: number;
+}
+
+export interface DifftasticSide {
+  /** Zero-based line index into the file. */
+  readonly lineNumber: number;
+  readonly text: string;
+  /** Novel token ranges; empty when the line matches the other side. */
+  readonly changes: ReadonlyArray<DifftasticRange>;
+}
+
+export interface DifftasticLineRow {
+  readonly kind: "line";
+  readonly old: DifftasticSide | null;
+  readonly new: DifftasticSide | null;
+  readonly changed: boolean;
+}
+
+export interface DifftasticGapRow {
+  readonly kind: "gap";
+  /** Index of the first hidden aligned row, used as a stable expansion key. */
+  readonly id: number;
+  readonly hiddenCount: number;
+}
+
+export type DifftasticRow = DifftasticLineRow | DifftasticGapRow;
+
+export const DIFFTASTIC_CONTEXT_LINES = 3;
+
+const toLines = (contents: string) => contents.split("\n").map((line) => line.replace(/\r$/, ""));
+
+const changesByLine = (entries: ReviewStructuralDiffResult["oldChanges"]) =>
+  new Map(entries.map((entry) => [entry.lineNumber, entry.changes]));
+
+/**
+ * Turns difftastic's alignment into display rows: changed rows plus surrounding
+ * context, with runs of unchanged rows folded into gaps unless expanded.
+ */
+export function buildDifftasticRows(
+  result: ReviewStructuralDiffResult,
+  expandedGapIds: ReadonlySet<number>,
+  contextLines = DIFFTASTIC_CONTEXT_LINES,
+): Array<DifftasticRow> {
+  const oldLines = toLines(result.oldContents);
+  const newLines = toLines(result.newContents);
+  const oldChanges = changesByLine(result.oldChanges);
+  const newChanges = changesByLine(result.newChanges);
+
+  const aligned: Array<DifftasticLineRow> = result.alignedLines.map(([oldIndex, newIndex]) => {
+    const old =
+      oldIndex === null
+        ? null
+        : {
+            lineNumber: oldIndex,
+            text: oldLines[oldIndex] ?? "",
+            changes: oldChanges.get(oldIndex) ?? [],
+          };
+    const next =
+      newIndex === null
+        ? null
+        : {
+            lineNumber: newIndex,
+            text: newLines[newIndex] ?? "",
+            changes: newChanges.get(newIndex) ?? [],
+          };
+    const changed =
+      old === null || next === null || old.changes.length > 0 || next.changes.length > 0;
+    return { kind: "line", old, new: next, changed };
+  });
+
+  const visible = aligned.map(() => false);
+  aligned.forEach((row, index) => {
+    if (!row.changed) return;
+    const from = Math.max(0, index - contextLines);
+    const to = Math.min(aligned.length - 1, index + contextLines);
+    for (let cursor = from; cursor <= to; cursor += 1) visible[cursor] = true;
+  });
+
+  const rows: Array<DifftasticRow> = [];
+  let index = 0;
+  while (index < aligned.length) {
+    if (visible[index]) {
+      rows.push(aligned[index]!);
+      index += 1;
+      continue;
+    }
+    const start = index;
+    while (index < aligned.length && !visible[index]) index += 1;
+    if (expandedGapIds.has(start)) {
+      rows.push(...aligned.slice(start, index));
+    } else {
+      rows.push({ kind: "gap", id: start, hiddenCount: index - start });
+    }
+  }
+  return rows;
+}
+
+/**
+ * Stacked layout: inside each run of changed rows, all old lines come first and
+ * then all new lines, like a unified diff hunk.
+ */
+export function stackDifftasticRows(
+  rows: ReadonlyArray<DifftasticRow>,
+): Array<
+  DifftasticGapRow | { kind: "stacked"; side: "old" | "new" | "both"; row: DifftasticLineRow }
+> {
+  const output: Array<
+    DifftasticGapRow | { kind: "stacked"; side: "old" | "new" | "both"; row: DifftasticLineRow }
+  > = [];
+  let pending: Array<DifftasticLineRow> = [];
+  const flush = () => {
+    for (const row of pending) if (row.old) output.push({ kind: "stacked", side: "old", row });
+    for (const row of pending) if (row.new) output.push({ kind: "stacked", side: "new", row });
+    pending = [];
+  };
+  for (const row of rows) {
+    if (row.kind === "line" && row.changed) {
+      pending.push(row);
+      continue;
+    }
+    flush();
+    output.push(row.kind === "gap" ? row : { kind: "stacked", side: "both", row });
+  }
+  flush();
+  return output;
+}
+
+/** Splits a line into plain and highlighted segments for rendering. */
+export function segmentLine(
+  text: string,
+  changes: ReadonlyArray<DifftasticRange>,
+): Array<{ readonly start: number; readonly text: string; readonly novel: boolean }> {
+  const segments: Array<{ start: number; text: string; novel: boolean }> = [];
+  let cursor = 0;
+  for (const change of changes) {
+    const start = Math.max(cursor, Math.min(change.start, text.length));
+    const end = Math.max(start, Math.min(change.end, text.length));
+    if (start > cursor) {
+      segments.push({ start: cursor, text: text.slice(cursor, start), novel: false });
+    }
+    if (end > start) segments.push({ start, text: text.slice(start, end), novel: true });
+    cursor = end;
+  }
+  if (cursor < text.length) {
+    segments.push({ start: cursor, text: text.slice(cursor), novel: false });
+  }
+  return segments;
+}

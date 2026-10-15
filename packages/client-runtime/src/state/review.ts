@@ -52,6 +52,11 @@ export function createReviewEnvironmentAtoms<R, E>(
           }),
         ),
     }),
+    structuralDiff: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:review:structural-diff",
+      tag: WS_METHODS.reviewGetStructuralDiff,
+      staleTimeMs: 5 * 60_000,
+    }),
     diffFileContents: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:review:diff-file-contents",
       tag: WS_METHODS.reviewGetDiffFileContents,
