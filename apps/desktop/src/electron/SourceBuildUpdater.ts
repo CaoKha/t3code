@@ -189,7 +189,8 @@ export const make = Effect.fn("SourceBuildUpdater.make")(function* (config: Sour
     yield* emit("checking-for-update");
     const releases = yield* httpClient
       .get(`https://api.github.com/repos/${config.upstreamRepository}/releases?per_page=50`, {
-        headers: { accept: "application/vnd.github+json" },
+        // GitHub's API rejects requests without a User-Agent with HTTP 403.
+        headers: { accept: "application/vnd.github+json", "user-agent": "t3code-source-build" },
       })
       .pipe(
         Effect.flatMap(HttpClientResponse.filterStatusOk),
