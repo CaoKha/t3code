@@ -10,6 +10,7 @@ import {
 import { isElectron } from "~/env";
 import {
   getPreviewPanelMaxWidth,
+  panelResizeEdge,
   type PreviewPanelInlineSize,
   usePreviewPanelInlineSize,
 } from "~/hooks/usePreviewPanelInlineSize";
@@ -24,11 +25,14 @@ export type PreviewPanelMode = "inline" | "sheet" | "sidebar" | "embedded";
 
 /**
  * Shell for the preview panel. In inline mode the panel is user-resizable
- * via a drag handle on the left edge; width persists per browser. In
- * sheet/sidebar modes the parent owns the size.
+ * via a drag handle on its inner edge (left by default, right when the panel
+ * sits left of the chat); width persists per browser. In sheet/sidebar modes
+ * the parent owns the size.
  */
 interface PreviewPanelShellProps {
   mode: PreviewPanelMode;
+  /** Which side of the chat the inline panel sits on. */
+  side?: "left" | "right";
   maximized?: boolean;
   inlineSize?: PreviewPanelInlineSize;
   open?: boolean;
@@ -58,6 +62,7 @@ function ResizablePreviewPanelShell(props: PreviewPanelShellProps) {
     enabled: props.mode === "inline" && !props.maximized,
     widthStorageKey: props.widthStorageKey,
     defaultWidth: props.defaultWidth,
+    edge: panelResizeEdge(props.side),
   });
   return <PreviewPanelShellFrame {...props} inlineSize={inlineSize} hostRef={hostRef} />;
 }
@@ -119,9 +124,10 @@ function PreviewPanelShellFrame(
       className={cn(
         "relative flex h-full min-h-0 min-w-0 max-w-full flex-col self-stretch bg-background",
         isInline
-          ? maximized
-            ? "flex-1 border-l border-border"
-            : "shrink-0 border-l border-border"
+          ? cn(
+              maximized ? "flex-1" : "shrink-0",
+              props.side === "left" ? "border-r border-border" : "border-l border-border",
+            )
           : "w-full",
         collapsible &&
           "[[data-panel-animations=true]_&]:transition-[width] [[data-panel-animations=true]_&]:duration-(--panel-animation-duration) [[data-panel-animations=true]_&]:ease-out",
@@ -144,7 +150,9 @@ function PreviewPanelShellFrame(
       data-preview-panel-mode={props.mode}
       data-preview-panel-maximized={maximized ? "true" : "false"}
     >
-      {isInline && !maximized ? <RightPanelResizeHandle handlers={handlers} /> : null}
+      {isInline && !maximized ? (
+        <RightPanelResizeHandle handlers={handlers} side={panelResizeEdge(props.side)} />
+      ) : null}
       <div className={cn("h-full min-h-0 w-full", collapsible && "overflow-clip")}>
         <div
           className="flex h-full min-h-0 min-w-0 flex-col"

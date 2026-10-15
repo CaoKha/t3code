@@ -106,6 +106,8 @@ interface RightPanelTabsProps {
   /** Forwarded to PreviewPanelShell as the initial width before a user resize. */
   defaultWidth?: number;
   inlineSize?: PreviewPanelInlineSize;
+  /** Which side of the chat the inline panel sits on. */
+  side?: "left" | "right";
   layoutControls?: ReactNode;
   surfaces: readonly RightPanelSurface[];
   /** Fallback environment for surfaces that do not carry their own. */
@@ -867,6 +869,8 @@ function SortableTab({
 
 export function RightPanelTabs(props: RightPanelTabsProps) {
   const ownsDesktopTitleBar = isElectron && props.mode === "inline";
+  // On the left the title bar controls sit over the chat, until the panel is maximized under them.
+  const reachesTitleBarControls = props.side !== "left" || props.maximized === true;
   const browserProfiles = useBrowserDefaults().profiles;
   const { resolvedTheme } = useTheme();
   const tabListRef = useRef<HTMLDivElement>(null);
@@ -1160,6 +1164,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
   return (
     <PreviewPanelShell
       mode={props.mode}
+      {...(props.side !== undefined ? { side: props.side } : {})}
       {...(props.maximized !== undefined ? { maximized: props.maximized } : {})}
       {...(props.open !== undefined ? { open: props.open } : {})}
       {...(props.widthStorageKey !== undefined ? { widthStorageKey: props.widthStorageKey } : {})}
@@ -1172,10 +1177,16 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
           // The sheet overlays from the viewport top, so its tab bar keeps
           // the titlebar's height: a compact row re-centers the layout
           // controls a few pixels higher and the cluster jumps on open.
-          props.mode === "inline" && !props.layoutControls ? "pr-28" : "pr-3",
+          props.mode === "inline" && !props.layoutControls && reachesTitleBarControls
+            ? "pr-36"
+            : "pr-3",
           ownsDesktopTitleBar && "drag-region",
-          ownsDesktopTitleBar && "wco:pr-(--workspace-native-controls-inset)",
-          props.mode === "inline" && props.maximized && COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+          ownsDesktopTitleBar &&
+            reachesTitleBarControls &&
+            "wco:pr-(--workspace-native-controls-inset)",
+          props.mode === "inline" &&
+            (props.maximized || props.side === "left") &&
+            COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
         )}
         data-right-panel-tabbar
       >
@@ -1460,14 +1471,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
           </div>
         ) : null}
         {props.layoutControls}
-        {ownsDesktopTitleBar && !props.layoutControls ? (
+        {ownsDesktopTitleBar && !props.layoutControls && reachesTitleBarControls ? (
           // Keeps the tabs clear of the window controls when the layout toggles live elsewhere.
-          <span aria-hidden className="hidden w-24 shrink-0 wco:block" />
+          <span aria-hidden className="hidden w-32 shrink-0 wco:block" />
         ) : null}
         {ownsDesktopTitleBar ? (
           <span
             aria-hidden
-            className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] h-[var(--workspace-topbar-height)] w-28 [-webkit-app-region:no-drag]"
+            className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] h-[var(--workspace-topbar-height)] w-32 [-webkit-app-region:no-drag]"
           />
         ) : null}
       </div>

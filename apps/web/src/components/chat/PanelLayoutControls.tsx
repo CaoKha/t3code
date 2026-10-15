@@ -1,4 +1,10 @@
-import { PanelBottomIcon, PanelRightIcon, SquareMenuIcon } from "lucide-react";
+import {
+  ArrowLeftRightIcon,
+  PanelBottomIcon,
+  PanelLeftIcon,
+  PanelRightIcon,
+  SquareMenuIcon,
+} from "lucide-react";
 import { Maximize2, Minimize2 } from "lucide";
 import { MorphIcon } from "~/components/MorphIcon";
 import { memo, type ReactElement } from "react";
@@ -23,6 +29,8 @@ export interface PanelLayoutControlsProps {
   rightPanelOpen: boolean;
   rightPanelShortcutLabel: string | null;
   rightPanelUnavailableLabel?: string;
+  /** Which side of the chat the right panel sits on. */
+  rightPanelSide?: "left" | "right";
   onToggleTerminal: () => void;
   onToggleThreadPanel: () => void;
   onToggleRightPanel: () => void;
@@ -43,6 +51,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
   rightPanelOpen,
   rightPanelShortcutLabel,
   rightPanelUnavailableLabel = "Right panel is unavailable",
+  rightPanelSide = "right",
   onToggleTerminal,
   onToggleThreadPanel,
   onToggleRightPanel,
@@ -117,7 +126,11 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
               size="sm"
               disabled={!rightPanelAvailable}
             >
-              <PanelRightIcon className="size-4" />
+              {rightPanelSide === "left" ? (
+                <PanelLeftIcon className="size-4" />
+              ) : (
+                <PanelRightIcon className="size-4" />
+              )}
             </Toggle>
           </TooltipTrigger>
           <TooltipPopup side="bottom">
@@ -128,6 +141,35 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
         </Tooltip>
       ) : null}
     </div>
+  );
+});
+
+export const RightPanelSideControl = memo(function RightPanelSideControl({
+  side,
+  onToggle,
+}: {
+  side: "left" | "right";
+  onToggle: () => void;
+}) {
+  const label = side === "left" ? "Move panel to the right" : "Move panel to the left";
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Toggle
+            className="shrink-0 [-webkit-app-region:no-drag]"
+            pressed={side === "left"}
+            onPressedChange={onToggle}
+            aria-label={label}
+            variant="ghost"
+            size="sm"
+          >
+            <ArrowLeftRightIcon className="size-4" />
+          </Toggle>
+        }
+      />
+      <TooltipPopup side="bottom">{label}</TooltipPopup>
+    </Tooltip>
   );
 });
 
