@@ -143,12 +143,20 @@ jobs:
           cd assets
           sha256sum -- * > SHA256SUMS
           cat SHA256SUMS
-          gh release create "v${VERSION}" ./* \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --prerelease \
-            --title "T3 Code fork ${VERSION}" \
-            --notes "Built from ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}."
+          # The releases API occasionally answers 403 for a moment; retry before failing.
+          for attempt in 1 2 3 4; do
+            if gh release create "v${VERSION}" ./* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "T3 Code fork ${VERSION}" \
+              --notes "Built from ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}."; then
+              break
+            fi
+            [ "$attempt" -lt 4 ] || exit 1
+            gh release delete "v${VERSION}" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2>/dev/null || true
+            sleep $((attempt * 20))
+          done
       - name: Prune old releases
         # Keep the newest 10 fork builds; the update button only needs the latest.
         run: |
