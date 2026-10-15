@@ -14,11 +14,16 @@ export class ElectronUpdaterCheckForUpdatesError extends Schema.TaggedError<Elec
   "ElectronUpdaterCheckForUpdatesError",
   {
     channel: Schema.NullOr(Schema.String),
+    /** A message written for the user, which replaces the generic one. */
+    detail: Schema.optional(Schema.String),
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    return `Electron updater failed to check for updates on channel ${this.channel ?? "default"}.`;
+    return (
+      this.detail ??
+      `Electron updater failed to check for updates on channel ${this.channel ?? "default"}.`
+    );
   }
 }
 
@@ -26,11 +31,16 @@ export class ElectronUpdaterDownloadUpdateError extends Schema.TaggedError<Elect
   "ElectronUpdaterDownloadUpdateError",
   {
     channel: Schema.NullOr(Schema.String),
+    /** A message written for the user, which replaces the generic one. */
+    detail: Schema.optional(Schema.String),
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    return `Electron updater failed to download the update on channel ${this.channel ?? "default"}.`;
+    return (
+      this.detail ??
+      `Electron updater failed to download the update on channel ${this.channel ?? "default"}.`
+    );
   }
 }
 
@@ -40,11 +50,16 @@ export class ElectronUpdaterQuitAndInstallError extends Schema.TaggedError<Elect
     channel: Schema.NullOr(Schema.String),
     isSilent: Schema.Boolean,
     isForceRunAfter: Schema.Boolean,
+    /** A message written for the user, which replaces the generic one. */
+    detail: Schema.optional(Schema.String),
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    return `Electron updater failed to quit and install the update on channel ${this.channel ?? "default"} (silent: ${this.isSilent}, force run after: ${this.isForceRunAfter}).`;
+    return (
+      this.detail ??
+      `Electron updater failed to quit and install the update on channel ${this.channel ?? "default"} (silent: ${this.isSilent}, force run after: ${this.isForceRunAfter}).`
+    );
   }
 }
 

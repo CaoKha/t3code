@@ -31,7 +31,7 @@ import * as ElectronProtocol from "./electron/ElectronProtocol.ts";
 import * as ElectronSafeStorage from "./electron/ElectronSafeStorage.ts";
 import * as ElectronShell from "./electron/ElectronShell.ts";
 import * as ElectronTheme from "./electron/ElectronTheme.ts";
-import * as ElectronUpdater from "./electron/ElectronUpdater.ts";
+import * as ForkReleaseUpdater from "./electron/ForkReleaseUpdater.ts";
 import * as ElectronWindow from "./electron/ElectronWindow.ts";
 import * as DesktopApp from "./app/DesktopApp.ts";
 import * as DesktopAppActivation from "./app/DesktopAppActivation.ts";
@@ -137,7 +137,12 @@ const layerElectron = Layer.mergeAll(
   ElectronSafeStorage.layer,
   ElectronShell.layer,
   ElectronTheme.layer,
-  ElectronUpdater.layer,
+  // Fork builds read their fork's GitHub releases and download the app from them.
+  ForkReleaseUpdater.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(ElectronApp.layer, NodeServices.layer, NodeHttpClient.layerUndici),
+    ),
+  ),
   ElectronWindow.layer,
   DesktopIpc.layer(Electron.ipcMain),
 );
