@@ -33,18 +33,22 @@ export const DIFFTASTIC_CONTEXT_LINES = 3;
 
 const toLines = (contents: string) => contents.split("\n").map((line) => line.replace(/\r$/, ""));
 
+// Sorted once here so `segmentLine` can sweep each line's ranges in order.
 const changesByLine = (entries: ReviewStructuralDiffResult["oldChanges"]) =>
-  new Map(entries.map((entry) => [entry.lineNumber, entry.changes]));
+  new Map(
+    entries.map((entry) => [
+      entry.lineNumber,
+      entry.changes.toSorted((left, right) => left.start - right.start),
+    ]),
+  );
 
-/**
- * Turns difftastic's alignment into display rows: changed rows plus surrounding
- * context, with runs of unchanged rows folded into gaps unless expanded.
- */
-export function buildDifftasticRows(
-  result: ReviewStructuralDiffResult,
-  expandedGapIds: ReadonlySet<number>,
-  contextLines = DIFFTASTIC_CONTEXT_LINES,
-): Array<DifftasticRow> {
+// Aligned rows depend only on the result, so expanding a gap reuses them and memoized rows
+// keep their identity.
+const alignedRowsCache = new WeakMap<ReviewStructuralDiffResult, Array<DifftasticLineRow>>();
+
+function alignDifftasticRows(result: ReviewStructuralDiffResult): Array<DifftasticLineRow> {
+  const cached = alignedRowsCache.get(result);
+  if (cached) return cached;
   const oldLines = toLines(result.oldContents);
   const newLines = toLines(result.newContents);
   const oldChanges = changesByLine(result.oldChanges);
@@ -71,7 +75,20 @@ export function buildDifftasticRows(
       old === null || next === null || old.changes.length > 0 || next.changes.length > 0;
     return { kind: "line", old, new: next, changed };
   });
+  alignedRowsCache.set(result, aligned);
+  return aligned;
+}
 
+/**
+ * Turns difftastic's alignment into display rows: changed rows plus surrounding
+ * context, with runs of unchanged rows folded into gaps unless expanded.
+ */
+export function buildDifftasticRows(
+  result: ReviewStructuralDiffResult,
+  expandedGapIds: ReadonlySet<number>,
+  contextLines = DIFFTASTIC_CONTEXT_LINES,
+): Array<DifftasticRow> {
+  const aligned = alignDifftasticRows(result);
   const visible = aligned.map(() => false);
   aligned.forEach((row, index) => {
     if (!row.changed) return;
@@ -99,18 +116,21 @@ export function buildDifftasticRows(
   return rows;
 }
 
+/** One stacked-layout line: an old or new line of a changed row, or an unchanged row. */
+export interface DifftasticStackedRow {
+  readonly kind: "stacked";
+  readonly side: "old" | "new" | "both";
+  readonly row: DifftasticLineRow;
+}
+
 /**
  * Stacked layout: inside each run of changed rows, all old lines come first and
  * then all new lines, like a unified diff hunk.
  */
 export function stackDifftasticRows(
   rows: ReadonlyArray<DifftasticRow>,
-): Array<
-  DifftasticGapRow | { kind: "stacked"; side: "old" | "new" | "both"; row: DifftasticLineRow }
-> {
-  const output: Array<
-    DifftasticGapRow | { kind: "stacked"; side: "old" | "new" | "both"; row: DifftasticLineRow }
-  > = [];
+): Array<DifftasticGapRow | DifftasticStackedRow> {
+  const output: Array<DifftasticGapRow | DifftasticStackedRow> = [];
   let pending: Array<DifftasticLineRow> = [];
   const flush = () => {
     for (const row of pending) if (row.old) output.push({ kind: "stacked", side: "old", row });
@@ -149,6 +169,7 @@ export interface DifftasticSegment {
 /**
  * Splits a line at both difftastic change boundaries and syntax token
  * boundaries, so each segment has one change state and one syntax style.
+ * Both range lists must be sorted by `start`; changes may overlap.
  */
 export function segmentLine(
   text: string,
@@ -156,38 +177,51 @@ export function segmentLine(
   tokens: ReadonlyArray<DifftasticSyntaxToken> = [],
 ): Array<DifftasticSegment> {
   const clamp = (value: number) => Math.max(0, Math.min(value, text.length));
-  const boundaries = new Set([0, text.length]);
-  for (const range of [...changes, ...tokens]) {
-    boundaries.add(clamp(range.start));
-    boundaries.add(clamp(range.end));
-  }
-  const points = [...boundaries].toSorted((left, right) => left - right);
+  const points = [0, text.length];
+  for (const range of changes) points.push(clamp(range.start), clamp(range.end));
+  for (const range of tokens) points.push(clamp(range.start), clamp(range.end));
+  points.sort((left, right) => left - right);
 
   const segments: Array<DifftasticSegment> = [];
+  let pending: { start: number; end: number; style: Omit<DifftasticSegment, "text"> } | null = null;
+  const flush = () => {
+    if (pending) segments.push({ ...pending.style, text: text.slice(pending.start, pending.end) });
+  };
+  let changeIndex = 0;
+  let tokenIndex = 0;
   for (let index = 0; index < points.length - 1; index += 1) {
     const start = points[index]!;
     const end = points[index + 1]!;
     if (end <= start) continue;
-    const novel = changes.some((change) => change.start <= start && start < change.end);
-    const token = tokens.find((candidate) => candidate.start <= start && start < candidate.end);
-    const previous = segments.at(-1);
+    // Ranges that ended before this segment never apply again, so each pointer only moves forward.
+    while (changeIndex < changes.length && changes[changeIndex]!.end <= start) changeIndex += 1;
+    while (tokenIndex < tokens.length && tokens[tokenIndex]!.end <= start) tokenIndex += 1;
+    const change = changes[changeIndex];
+    const novel = change !== undefined && change.start <= start;
+    const candidate = tokens[tokenIndex];
+    const token = candidate !== undefined && candidate.start <= start ? candidate : undefined;
     if (
-      previous &&
-      previous.novel === novel &&
-      previous.color === token?.color &&
-      previous.fontStyle === token?.fontStyle
+      pending &&
+      pending.style.novel === novel &&
+      pending.style.color === token?.color &&
+      pending.style.fontStyle === token?.fontStyle
     ) {
-      segments[segments.length - 1] = { ...previous, text: previous.text + text.slice(start, end) };
+      pending.end = end;
       continue;
     }
-    segments.push({
+    flush();
+    pending = {
       start,
-      text: text.slice(start, end),
-      novel,
-      ...(token?.color === undefined ? {} : { color: token.color }),
-      ...(token?.fontStyle === undefined ? {} : { fontStyle: token.fontStyle }),
-    });
+      end,
+      style: {
+        start,
+        novel,
+        ...(token?.color === undefined ? {} : { color: token.color }),
+        ...(token?.fontStyle === undefined ? {} : { fontStyle: token.fontStyle }),
+      },
+    };
   }
+  flush();
   return segments;
 }
 

@@ -23,6 +23,10 @@ const PREVIEW_PANEL_MAX_WIDTH_FRACTION = 0.7;
 const SIBLING_COLUMN_MIN_WIDTH = 360;
 const PREVIEW_PANEL_DEFAULT_WIDTH = 540;
 
+/** The inner edge a panel resizes from: the one facing the chat. */
+export const panelResizeEdge = (side: "left" | "right" | undefined): "left" | "right" =>
+  side === "left" ? "right" : "left";
+
 export function usePreviewPanelInlineSize(
   hostRef?: RefObject<HTMLElement | null>,
   options: {

@@ -52,24 +52,34 @@ export const SELF_UPDATE_DIR_ENV = "T3CODE_SELF_UPDATE_DIR";
 export function resolveServerSelfUpdateCapability(input: {
   readonly desktopManaged: boolean;
   readonly launcherManaged: boolean;
-  readonly respawnManaged?: boolean;
+  readonly respawnManaged: boolean;
 }): ServerSelfUpdateCapability | null {
   if (input.desktopManaged) return "desktop-managed" as const;
   if (input.launcherManaged) return "boot-service" as const;
   return input.respawnManaged ? ("respawn" as const) : null;
 }
 
-/** The respawn update directory, when this server opted in. */
-export const respawnUpdateDir = Config.String(SELF_UPDATE_DIR_ENV).pipe(
-  Config.option,
-  Effect.map((value) =>
-    Option.filter(
-      Option.map(value, (dir) => dir.trim()),
-      (dir) => dir !== "",
+/** The respawn update directory, when this server opted in. Windows has no SIGTERM restart. */
+export const respawnUpdateDir = Effect.gen(function* () {
+  const dir = Option.filter(
+    Option.map(
+      yield* Config.String(SELF_UPDATE_DIR_ENV).pipe(
+        Config.option,
+        Effect.orElseSucceed(() => Option.none<string>()),
+      ),
+      (value) => value.trim(),
     ),
-  ),
-  Effect.orElseSucceed(() => Option.none<string>()),
-);
+    (value) => value !== "",
+  );
+  if (Option.isNone(dir) || (yield* HostProcess.Platform) === "win32") return Option.none<string>();
+  if (!(yield* Path.Path).isAbsolute(dir.value)) {
+    yield* Effect.logWarning(`${SELF_UPDATE_DIR_ENV} must be an absolute path; ignoring it.`, {
+      dir: dir.value,
+    });
+    return Option.none<string>();
+  }
+  return dir;
+});
 
 export class ServerSelfUpdate extends Context.Service<
   ServerSelfUpdate,
@@ -204,7 +214,6 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
   const path = yield* Path.Path;
   const platform = yield* HostProcess.Platform;
   const arch = yield* HostProcess.Architecture;
-  const serverPid = process.pid;
   // Archive-distributed targets download from GitHub Releases. The client is
   // optional so callers without one (tests, npm-only hosts) still construct.
   const httpClient = yield* HttpClient.HttpClient;
@@ -231,6 +240,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       reportProgress: (
         stage: ServerSelfUpdateProgressStage,
       ) => Effect.Effect<void, ServerSelfUpdateError>,
+      onHandoffAccepted: () => Effect.Effect<void>,
     ) {
       yield* reportProgress("downloading");
       const paths = yield* ensurePinnedRuntimeInstalled({
@@ -255,7 +265,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
                 (cause) => new PinnedRuntimeInstallError({ step: "running the staged t3", cause }),
               ),
               Effect.flatMap((result) =>
-                result.code === 0 && result.stdout.includes(targetVersion)
+                result.code === 0 && /\bv(\S+)\s*$/.exec(result.stdout)?.[1] === targetVersion
                   ? Effect.void
                   : Effect.fail(
                       new PinnedRuntimeInstallError({ step: "verifying the staged t3 version" }),
@@ -267,31 +277,28 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       );
 
       yield* reportProgress("installing");
-      // Swap `current` atomically: a new symlink renamed over the old one.
-      const currentPath = path.join(dir, "current");
-      const nextLink = path.join(dir, `.current-${targetVersion}`);
-      yield* fs.remove(nextLink, { force: true });
-      yield* fs.symlink(path.relative(dir, paths.versionDir), nextLink);
-      yield* fs.rename(nextLink, currentPath);
+      // Once `current` moves, the handoff is accepted and the exit scheduled as one step.
+      yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          // Swap `current` atomically: a new symlink renamed over the old one.
+          const currentPath = path.join(dir, "current");
+          const nextLink = path.join(dir, `.current-${targetVersion}`);
+          yield* fs.remove(nextLink, { force: true });
+          yield* fs.symlink(path.relative(dir, paths.versionDir), nextLink);
+          yield* fs.rename(nextLink, currentPath);
+          yield* onHandoffAccepted();
+          // Stop gracefully (SIGTERM runs the normal shutdown) once the reply is sent;
+          // the supervisor restarts the server from `current`.
+          yield* Effect.sleep(RESPAWN_EXIT_DELAY).pipe(
+            Effect.andThen(Effect.sync(() => process.kill(process.pid, "SIGTERM"))),
+            Effect.forkDetach,
+          );
+        }),
+      );
       yield* Effect.logInfo("Server update installed; restarting onto it.", {
         targetVersion,
         runtimePath: paths.entryPath,
       });
-
-      // Stop gracefully (SIGTERM runs the normal shutdown) once the reply is sent;
-      // the supervisor restarts the server from `current`.
-      yield* runner
-        .run({
-          command: "/bin/sh",
-          args: [
-            "-c",
-            'sleep "$1"; kill -TERM "$2"',
-            "t3-respawn",
-            String(Duration.toSeconds(RESPAWN_EXIT_DELAY)),
-            String(serverPid),
-          ],
-        })
-        .pipe(Effect.ignore, Effect.forkDetach);
       return { targetVersion, method: "respawn" as const };
     },
     Effect.catchTags({
@@ -324,20 +331,19 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     if (!isExactServiceVersion(targetVersion)) {
       return yield* failWith(`'${targetVersion}' is not an exact t3 version.`);
     }
-    if (capability === "respawn" && Option.isSome(respawnDir)) {
-      if (targetVersion === packageJson.version) {
-        return yield* failWith(`This server already runs t3@${targetVersion}.`);
-      }
-      if (yield* Ref.getAndSet(inFlight, true)) {
-        return yield* failWith("A server update is already in progress.");
-      }
-      return yield* updateByRespawn(respawnDir.value, targetVersion, reportProgress).pipe(
-        Effect.tap(() => onHandoffAccepted()),
-        Effect.onError(() => Ref.set(inFlight, false)),
-      );
+    if (capability === "respawn" && targetVersion === packageJson.version) {
+      return yield* failWith(`This server already runs t3@${targetVersion}.`);
     }
     if (yield* Ref.getAndSet(inFlight, true)) {
       return yield* failWith("A server update is already in progress.");
+    }
+    if (capability === "respawn" && Option.isSome(respawnDir)) {
+      return yield* updateByRespawn(
+        respawnDir.value,
+        targetVersion,
+        reportProgress,
+        onHandoffAccepted,
+      ).pipe(Effect.onError(() => Ref.set(inFlight, false)));
     }
 
     return yield* Effect.gen(function* () {

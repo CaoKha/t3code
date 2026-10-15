@@ -1,13 +1,15 @@
 /**
  * StructuralDiffService - Structural (syntax-aware) file diffs powered by difftastic.
  *
- * Reads the old/new file pair for a review or turn selection, runs
+ * Reads the old/new file pair for a review, pull request or turn selection, runs
  * `difft --display json` on it, and returns both contents with difftastic's
  * line alignment and novel token ranges. Offsets are converted from UTF-8
  * bytes to UTF-16 string indices so clients can slice lines directly.
  *
  * @module StructuralDiffService
  */
+import * as NodeOS from "node:os";
+
 import {
   ReviewStructuralDiffError,
   type ReviewStructuralDiffInput,
@@ -15,22 +17,26 @@ import {
   type ReviewStructuralDiffResult,
   type ReviewStructuralDiffTarget,
 } from "@t3tools/contracts";
+import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Semaphore from "effect/Semaphore";
 
 import * as CheckpointDiffQuery from "../checkpointing/CheckpointDiffQuery.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ReviewService from "./ReviewService.ts";
 
 const MAX_FILE_BYTES = 1024 * 1024;
 const DIFFT_TIMEOUT = "20 seconds";
 const DIFFT_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
+const OVERSIZED_REASON = "File is larger than 1 MB.";
+const BINARY_REASON = "Binary file.";
 
 const DifftChange = Schema.Struct({ start: Schema.Number, end: Schema.Number });
 const DifftSide = Schema.Struct({
@@ -38,7 +44,7 @@ const DifftSide = Schema.Struct({
   changes: Schema.Array(DifftChange),
 });
 const DifftOutput = Schema.Struct({
-  status: Schema.String,
+  status: Schema.Literals(["unchanged", "changed", "created", "deleted"]),
   language: Schema.optional(Schema.NullOr(Schema.String)),
   aligned_lines: Schema.optional(
     Schema.Array(Schema.Tuple([Schema.NullOr(Schema.Number), Schema.NullOr(Schema.Number)])),
@@ -55,35 +61,84 @@ const DifftOutput = Schema.Struct({
   ),
 });
 type DifftOutput = typeof DifftOutput.Type;
-const decodeDifftOutput = Schema.decodeUnknownEffect(Schema.fromJsonString(DifftOutput));
+/** @public Exported for fixture tests of difftastic's JSON output. */
+export const decodeDifftOutput = Schema.decodeUnknownEffect(Schema.fromJsonString(DifftOutput));
 
 export class StructuralDiffService extends Context.Service<
   StructuralDiffService,
   {
-    /** Reads the file pair for a working-tree, branch or turn target, then diffs it. */
+    /** Reads the file pair for a working-tree, branch, pull request or turn target, then diffs it. */
     readonly getStructuralDiff: (
       input: ReviewStructuralDiffInput,
     ) => Effect.Effect<ReviewStructuralDiffResult, ReviewStructuralDiffError>;
-    /** Diffs a file pair the caller already read, e.g. a pull request's. */
-    readonly diffContents: (input: {
-      readonly filePath: string;
-      readonly oldContents: string;
-      readonly newContents: string;
-    }) => Effect.Effect<ReviewStructuralDiffResult, ReviewStructuralDiffError>;
   }
 >()("t3/review/StructuralDiffService") {}
+
+/** A file pair that difftastic cannot compare, answered as `unavailable` rather than an error. */
+class StructuralDiffUnavailable extends Schema.TaggedError<StructuralDiffUnavailable>()(
+  "StructuralDiffUnavailable",
+  { reason: Schema.String },
+) {}
 
 const fail = (message: string, cause?: unknown) =>
   new ReviewStructuralDiffError({ message, ...(cause === undefined ? {} : { cause }) });
 
+/** The messages along an error's cause chain, for recognising upstream read limits. */
+const errorText = (error: unknown) => {
+  const parts: Array<string> = [];
+  let current: unknown = error;
+  for (let depth = 0; depth < 8 && typeof current === "object" && current !== null; depth += 1) {
+    if ("message" in current && typeof current.message === "string") parts.push(current.message);
+    if ("detail" in current && typeof current.detail === "string") parts.push(current.detail);
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return parts.join("\n");
+};
+
+/** Maps a failed read to `unavailable` when the file is too large or binary to compare. */
+const readFailure = (message: string) => (cause: unknown) => {
+  const text = errorText(cause);
+  if (/exceeds the 1 MB|output exceeded/i.test(text)) {
+    return new StructuralDiffUnavailable({ reason: OVERSIZED_REASON });
+  }
+  if (/binary/i.test(text)) return new StructuralDiffUnavailable({ reason: BINARY_REASON });
+  return fail(message, cause);
+};
+
+/** Clients only show the reason, so the file pair is not sent back. */
+const unavailableResult = (reason: string): ReviewStructuralDiffResult => ({
+  status: "unavailable",
+  reason,
+  language: null,
+  oldContents: "",
+  newContents: "",
+  alignedLines: [],
+  oldChanges: [],
+  newChanges: [],
+});
+
 const splitLines = (contents: string) => contents.split("\n");
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder("utf-8");
 
-/** Converts a UTF-8 byte offset within `line` to a UTF-16 string index. */
-const byteOffsetToIndex = (bytes: Uint8Array, offset: number) =>
-  decoder.decode(bytes.subarray(0, Math.max(0, Math.min(offset, bytes.length)))).length;
+/** Maps UTF-8 byte offsets within `line` to UTF-16 indices, built in one pass over the line. */
+const byteOffsetConverter = (line: string): ((offset: number) => number) => {
+  const byteLength = encoder.encode(line).length;
+  if (byteLength === line.length) {
+    return (offset) => Math.max(0, Math.min(offset, line.length));
+  }
+  const indices = new Uint32Array(byteLength + 1);
+  let byte = 0;
+  for (let index = 0; index < line.length;) {
+    const codePoint = line.codePointAt(index) ?? 0;
+    const width = codePoint < 0x80 ? 1 : codePoint < 0x800 ? 2 : codePoint < 0x10000 ? 3 : 4;
+    indices.fill(index, byte, byte + width);
+    byte += width;
+    index += codePoint > 0xffff ? 2 : 1;
+  }
+  indices[byteLength] = line.length;
+  return (offset) => indices[Math.max(0, Math.min(offset, byteLength))] ?? line.length;
+};
 
 const collectSideChanges = (
   lines: ReadonlyArray<string>,
@@ -92,31 +147,36 @@ const collectSideChanges = (
     readonly changes: ReadonlyArray<{ readonly start: number; readonly end: number }>;
   }>,
 ): Array<ReviewStructuralDiffLineChanges> => {
-  const byLine = new Map<number, Array<{ start: number; end: number }>>();
+  const byLine = new Map<
+    number,
+    { toIndex: (offset: number) => number; ranges: Array<{ start: number; end: number }> }
+  >();
   for (const side of sides) {
-    const line = lines[side.line_number] ?? "";
-    const bytes = encoder.encode(line);
-    const ranges = byLine.get(side.line_number) ?? [];
-    for (const change of side.changes) {
-      const start = byteOffsetToIndex(bytes, change.start);
-      const end = byteOffsetToIndex(bytes, change.end);
-      if (end > start) ranges.push({ start, end });
+    let entry = byLine.get(side.line_number);
+    if (entry === undefined) {
+      entry = { toIndex: byteOffsetConverter(lines[side.line_number] ?? ""), ranges: [] };
+      byLine.set(side.line_number, entry);
     }
-    byLine.set(side.line_number, ranges);
+    for (const change of side.changes) {
+      const start = entry.toIndex(change.start);
+      const end = entry.toIndex(change.end);
+      if (end > start) entry.ranges.push({ start, end });
+    }
   }
   return [...byLine.entries()]
     .toSorted(([left], [right]) => left - right)
-    .map(([lineNumber, changes]) => ({
+    .map(([lineNumber, { ranges }]) => ({
       lineNumber,
-      changes: changes.toSorted((left, right) => left.start - right.start),
+      changes: ranges.toSorted((left, right) => left.start - right.start),
     }));
 };
 
 /** Every line on one side is novel: used for created and deleted files. */
 const wholeFileChanges = (lines: ReadonlyArray<string>) =>
-  lines.flatMap((line, lineNumber) =>
-    line.length === 0 ? [] : [{ lineNumber, changes: [{ start: 0, end: line.length }] }],
-  );
+  lines.flatMap((line, lineNumber) => {
+    const end = line.endsWith("\r") ? line.length - 1 : line.length;
+    return end === 0 ? [] : [{ lineNumber, changes: [{ start: 0, end }] }];
+  });
 
 const trimTrailingEmptyLine = (lines: ReadonlyArray<string>) =>
   lines.length > 0 && lines[lines.length - 1] === "" ? lines.slice(0, -1) : lines;
@@ -127,6 +187,7 @@ export const toStructuralDiffResult = (
   newContents: string,
 ): ReviewStructuralDiffResult => {
   const language = output.language ?? null;
+  if (language === "Binary") return unavailableResult(BINARY_REASON);
   const oldLines = splitLines(oldContents);
   const newLines = splitLines(newContents);
 
@@ -179,29 +240,14 @@ export const toStructuralDiffResult = (
 export const make = Effect.gen(function* () {
   const review = yield* ReviewService.ReviewService;
   const checkpoints = yield* CheckpointDiffQuery.CheckpointDiffQuery;
+  const pullRequests = yield* PullRequestService.PullRequestService;
   const git = yield* GitVcsDriver.GitVcsDriver;
   const runner = yield* ProcessRunner.ProcessRunner;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-
-  // Desktop apps launched from the Dock may not inherit a shell PATH, so the
-  // usual install locations are checked before falling back to PATH lookup.
-  const resolveDifftCommand = Effect.gen(function* () {
-    const home = yield* HostProcess.HomeDirectory;
-    const candidates = [
-      process.env.T3CODE_DIFFT_PATH,
-      "/opt/homebrew/bin/difft",
-      "/usr/local/bin/difft",
-      path.join(home, ".cargo", "bin", "difft"),
-      path.join(home, ".local", "bin", "difft"),
-    ].filter((candidate): candidate is string => Boolean(candidate));
-    for (const candidate of candidates) {
-      if (yield* fileSystem.exists(candidate).pipe(Effect.orElseSucceed(() => false))) {
-        return candidate;
-      }
-    }
-    return "difft";
-  });
+  const difftCommand = yield* Config.String("T3CODE_DIFFT_PATH").pipe(Config.withDefault("difft"));
+  // Each run parses both files; leave a core for the rest of the server.
+  const difftPermits = yield* Semaphore.make(Math.max(1, NodeOS.availableParallelism() - 1));
 
   const readFileAtRef = Effect.fn("StructuralDiffService.readFileAtRef")(function* (
     cwd: string,
@@ -215,17 +261,27 @@ export const make = Effect.gen(function* () {
         args: ["show", `${ref}:${filePath}`],
         maxOutputBytes: MAX_FILE_BYTES,
       })
-      .pipe(Effect.mapError((cause) => fail(`Could not read '${filePath}' at ${ref}.`, cause)));
+      .pipe(Effect.mapError(readFailure(`Could not read '${filePath}' at ${ref}.`)));
+    if (result.stdout.includes("\0")) {
+      return yield* new StructuralDiffUnavailable({ reason: BINARY_REASON });
+    }
     return result.stdout;
   });
 
   const readContents = Effect.fn("StructuralDiffService.readContents")(function* (
-    target: Exclude<ReviewStructuralDiffTarget, { readonly _tag: "pullRequest" }>,
+    target: ReviewStructuralDiffTarget,
   ) {
     if (target._tag === "git") {
-      return yield* review
+      const contents = yield* review
         .getDiffFileContents(target.file)
-        .pipe(Effect.mapError((cause) => fail("Could not read the file pair to compare.", cause)));
+        .pipe(Effect.mapError(readFailure("Could not read the file pair to compare.")));
+      return { filePath: target.file.newPath, ...contents };
+    }
+    if (target._tag === "pullRequest") {
+      const contents = yield* pullRequests
+        .diffFileContents(target.file)
+        .pipe(Effect.mapError(readFailure("Could not read the pull request files to compare.")));
+      return { filePath: target.file.newPath, ...contents };
     }
     const refs = yield* checkpoints
       .resolveTurnRefs(target)
@@ -241,7 +297,7 @@ export const make = Effect.gen(function* () {
       ],
       { concurrency: 2 },
     );
-    return { oldContents, newContents };
+    return { filePath: target.newPath, oldContents, newContents };
   });
 
   const runDifft = Effect.fn("StructuralDiffService.runDifft")(function* (
@@ -253,7 +309,8 @@ export const make = Effect.gen(function* () {
       .makeTempDirectoryScoped({ prefix: "t3code-difft-" })
       .pipe(Effect.mapError((cause) => fail("Could not create a temporary directory.", cause)));
     // difftastic picks the parser from the file name, so both copies keep it.
-    const name = path.basename(filePath);
+    const baseName = path.basename(filePath);
+    const name = baseName === "" || baseName === "." || baseName === ".." ? "file" : baseName;
     const oldFile = path.join(directory, "old", name);
     const newFile = path.join(directory, "new", name);
     yield* Effect.all(
@@ -271,53 +328,54 @@ export const make = Effect.gen(function* () {
       { concurrency: 2 },
     ).pipe(Effect.mapError((cause) => fail("Could not prepare the files to compare.", cause)));
 
-    const command = yield* resolveDifftCommand;
-    return yield* runner
+    const result = yield* runner
       .run({
-        command,
+        command: difftCommand,
         args: ["--display", "json", "--color", "never", oldFile, newFile],
         cwd: directory,
         env: { DFT_UNSTABLE: "yes" },
         timeout: DIFFT_TIMEOUT,
+        timeoutBehavior: "timedOutResult",
         maxOutputBytes: DIFFT_MAX_OUTPUT_BYTES,
       })
       .pipe(
-        Effect.map((result) => ({ _tag: "ran" as const, result })),
         Effect.catchTags({
-          ProcessSpawnError: () => Effect.succeed({ _tag: "missing" as const }),
+          ProcessSpawnError: () =>
+            Effect.fail(
+              new StructuralDiffUnavailable({
+                reason:
+                  "difftastic is not installed. Install it (e.g. `brew install difftastic`) or set T3CODE_DIFFT_PATH.",
+              }),
+            ),
+          ProcessOutputLimitError: () =>
+            Effect.fail(new StructuralDiffUnavailable({ reason: "difftastic output too large." })),
         }),
-        Effect.mapError((cause) => fail("difftastic failed.", cause)),
+        Effect.mapError((cause) =>
+          cause._tag === "StructuralDiffUnavailable" ? cause : fail("difftastic failed.", cause),
+        ),
       );
+    if (result.timedOut) {
+      return yield* new StructuralDiffUnavailable({ reason: "difftastic timed out on this file." });
+    }
+    if (result.code !== 0) {
+      return yield* new StructuralDiffUnavailable({
+        reason: result.stderr.trim() || "difftastic exited with an error.",
+      });
+    }
+    return result.stdout;
   }, Effect.scoped);
 
-  const diffContents: StructuralDiffService["Service"]["diffContents"] = Effect.fn(
-    "StructuralDiffService.diffContents",
-  )(function* ({ filePath, oldContents, newContents }) {
-    const unavailable = (reason: string): ReviewStructuralDiffResult => ({
-      status: "unavailable",
-      reason,
-      language: null,
-      oldContents,
-      newContents,
-      alignedLines: [],
-      oldChanges: [],
-      newChanges: [],
-    });
-
-    const output = yield* runDifft(filePath, oldContents, newContents);
-    if (output._tag === "missing") {
-      return unavailable(
-        "difftastic is not installed. Install it (e.g. `brew install difftastic`) or set T3CODE_DIFFT_PATH.",
-      );
+  const diffContents = Effect.fn("StructuralDiffService.diffContents")(function* (input: {
+    readonly filePath: string;
+    readonly oldContents: string;
+    readonly newContents: string;
+  }) {
+    const { filePath, oldContents, newContents } = input;
+    if (oldContents.includes("\0") || newContents.includes("\0")) {
+      return unavailableResult(BINARY_REASON);
     }
-    if (output.result.timedOut) {
-      return unavailable("difftastic timed out on this file.");
-    }
-    if (output.result.code !== 0) {
-      return unavailable(output.result.stderr.trim() || "difftastic exited with an error.");
-    }
-
-    const parsed = yield* decodeDifftOutput(output.result.stdout.trim()).pipe(
+    const stdout = yield* difftPermits.withPermits(1)(runDifft(filePath, oldContents, newContents));
+    const parsed = yield* decodeDifftOutput(stdout.trim()).pipe(
       Effect.mapError((cause) => fail("Could not parse difftastic output.", cause)),
     );
     return toStructuralDiffResult(parsed, oldContents, newContents);
@@ -325,20 +383,16 @@ export const make = Effect.gen(function* () {
 
   const getStructuralDiff: StructuralDiffService["Service"]["getStructuralDiff"] = Effect.fn(
     "StructuralDiffService.getStructuralDiff",
-  )(function* (input) {
-    const { target } = input;
-    // Pull request contents come from the host's PullRequestService, which the RPC layer owns.
-    if (target._tag === "pullRequest") {
-      return yield* fail("Pull request diffs are read by the RPC handler.");
-    }
-    const contents = yield* readContents(target);
-    return yield* diffContents({
-      filePath: target._tag === "git" ? target.file.newPath : target.newPath,
-      ...contents,
-    });
-  });
+  )(
+    function* (input) {
+      return yield* diffContents(yield* readContents(input.target));
+    },
+    Effect.catchTags({
+      StructuralDiffUnavailable: ({ reason }) => Effect.succeed(unavailableResult(reason)),
+    }),
+  );
 
-  return StructuralDiffService.of({ getStructuralDiff, diffContents });
+  return StructuralDiffService.of({ getStructuralDiff });
 });
 
 export const layer = Layer.effect(StructuralDiffService, make).pipe(

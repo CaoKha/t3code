@@ -1,5 +1,7 @@
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 import { NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { TurnCountRange } from "./checkpointDiff.ts";
 import { GitCommandError } from "./git.ts";
 import { PullRequestDiffFileContentsInput } from "./pullRequest.ts";
 import { VcsError } from "./vcs.ts";
@@ -43,10 +45,18 @@ export const ReviewDiffPreviewSource = Schema.Struct({
 });
 export type ReviewDiffPreviewSource = typeof ReviewDiffPreviewSource.Type;
 
+const ReviewDiffFileChangeType = Schema.Literals([
+  "change",
+  "rename-pure",
+  "rename-changed",
+  "new",
+  "deleted",
+]);
+
 export const ReviewDiffFileContentsInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   sourceKind: ReviewDiffPreviewSourceKind,
-  changeType: Schema.Literals(["change", "rename-pure", "rename-changed", "new", "deleted"]),
+  changeType: ReviewDiffFileChangeType,
   baseRef: Schema.NullOr(TrimmedNonEmptyString),
   headRef: Schema.NullOr(TrimmedNonEmptyString),
   oldPath: TrimmedNonEmptyString,
@@ -70,14 +80,6 @@ export type ReviewDiffPreviewResult = typeof ReviewDiffPreviewResult.Type;
 export const ReviewDiffPreviewError = Schema.Union([VcsError, GitCommandError]);
 export type ReviewDiffPreviewError = typeof ReviewDiffPreviewError.Type;
 
-const ReviewDiffFileChangeType = Schema.Literals([
-  "change",
-  "rename-pure",
-  "rename-changed",
-  "new",
-  "deleted",
-]);
-
 /** Selects the old/new file pair that a structural diff compares. */
 export const ReviewStructuralDiffTarget = Schema.Union([
   Schema.TaggedStruct("git", {
@@ -86,14 +88,16 @@ export const ReviewStructuralDiffTarget = Schema.Union([
   Schema.TaggedStruct("pullRequest", {
     file: PullRequestDiffFileContentsInput,
   }),
-  Schema.TaggedStruct("turn", {
-    threadId: ThreadId,
-    fromTurnCount: NonNegativeInt,
-    toTurnCount: NonNegativeInt,
-    changeType: ReviewDiffFileChangeType,
-    oldPath: TrimmedNonEmptyString,
-    newPath: TrimmedNonEmptyString,
-  }),
+  TurnCountRange.mapFields(
+    Struct.assign({
+      _tag: Schema.tag("turn"),
+      threadId: ThreadId,
+      changeType: ReviewDiffFileChangeType,
+      oldPath: TrimmedNonEmptyString,
+      newPath: TrimmedNonEmptyString,
+    }),
+    { unsafePreserveChecks: true },
+  ),
 ]);
 export type ReviewStructuralDiffTarget = typeof ReviewStructuralDiffTarget.Type;
 

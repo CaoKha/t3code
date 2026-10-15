@@ -436,6 +436,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["difftastic difft structural syntax aware standard git"],
   },
   {
+    id: "right-panel-position",
+    title: "Right panel position",
+    to: "/settings/general",
+    searchTerms: ["side panel left right swap move chat layout browser terminal diff"],
+  },
+  {
     id: "proactive-panels",
     title: "Proactive panels",
     to: "/settings/general",

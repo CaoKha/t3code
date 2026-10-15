@@ -1,13 +1,10 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
 import { autoUpdater } from "electron-updater";
-
-import * as ForkReleaseUpdater from "./ForkReleaseUpdater.ts";
 
 type AutoUpdater = typeof autoUpdater;
 
@@ -53,11 +50,16 @@ export class ElectronUpdaterQuitAndInstallError extends Schema.TaggedError<Elect
     channel: Schema.NullOr(Schema.String),
     isSilent: Schema.Boolean,
     isForceRunAfter: Schema.Boolean,
+    /** A message written for the user, which replaces the generic one. */
+    detail: Schema.optional(Schema.String),
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    return `Electron updater failed to quit and install the update on channel ${this.channel ?? "default"} (silent: ${this.isSilent}, force run after: ${this.isForceRunAfter}).`;
+    return (
+      this.detail ??
+      `Electron updater failed to quit and install the update on channel ${this.channel ?? "default"} (silent: ${this.isSilent}, force run after: ${this.isForceRunAfter}).`
+    );
   }
 }
 
@@ -86,8 +88,6 @@ export class ElectronUpdater extends Context.Service<
       readonly isSilent: boolean;
       readonly isForceRunAfter: boolean;
     }) => Effect.Effect<void, ElectronUpdaterQuitAndInstallError>;
-    /** True when the updater brings its own feed instead of reading app-update.yml. */
-    readonly selfConfigured?: boolean;
     readonly on: <Args extends ReadonlyArray<unknown>>(
       eventName: string,
       listener: (...args: Args) => void,
@@ -185,12 +185,3 @@ export const make = ElectronUpdater.of({
 });
 
 export const layer = Layer.succeed(ElectronUpdater, make);
-
-/** Fork builds update from their fork's CI releases (see ForkReleaseUpdater); others use electron-updater. */
-export const layerWithForkReleases = Layer.effect(
-  ElectronUpdater,
-  Effect.gen(function* () {
-    const repository = yield* ForkReleaseUpdater.forkReleaseRepository;
-    return Option.isSome(repository) ? yield* ForkReleaseUpdater.make(repository.value) : make;
-  }),
-);

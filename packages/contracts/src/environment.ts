@@ -70,8 +70,8 @@ export type WorktreeSubmodules = typeof WorktreeSubmodules.Type;
 export type ExecutionEnvironmentPlatform = typeof ExecutionEnvironmentPlatform.Type;
 
 /** How a server can replace itself with another version when asked over RPC.
-    New servers only advertise the stable launcher-backed "boot-service" path;
-    "respawn" remains decodable for compatibility with older servers.
+    "boot-service" hands off to the launcher; "respawn" is for a supervised
+    server that opted in with T3CODE_SELF_UPDATE_DIR and restarts from it.
     "desktop-app" means the supervising desktop app updated and relaunched
     itself, bringing the server back with it. */
 export const ServerSelfUpdateMethod = Schema.Literals(["boot-service", "respawn", "desktop-app"]);

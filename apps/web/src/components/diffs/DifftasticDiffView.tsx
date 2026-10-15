@@ -1,10 +1,15 @@
-import { getFiletypeFromFileName, type FileDiffMetadata } from "@pierre/diffs";
+import {
+  getFiletypeFromFileName,
+  type CodeViewScrollTarget,
+  type FileDiffMetadata,
+} from "@pierre/diffs";
 import type { EnvironmentId, ReviewStructuralDiffTarget } from "@t3tools/contracts";
 import { ChevronRightIcon } from "lucide-react";
 import {
   createContext,
   memo,
   use,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -23,6 +28,7 @@ import {
   type DifftasticSyntaxToken,
   type DifftasticGapRow,
   type DifftasticLineRow,
+  type DifftasticRow,
   type DifftasticSide,
 } from "~/lib/difftasticRows";
 import { getDiffLineStat, resolveDiffThemeName, resolveFileDiffPath } from "~/lib/diffRendering";
@@ -34,10 +40,27 @@ import { DiffFilePathCopyButton } from "../DiffFilePathCopyButton";
 import { DiffStatLabel } from "../chat/DiffStatLabel";
 import { Button } from "../ui/button";
 
+interface DifftasticFileStat {
+  readonly additions: number;
+  readonly deletions: number;
+}
+
 export interface DifftasticFile {
   readonly fileKey: string;
   readonly fileDiff: FileDiffMetadata;
   readonly collapsed: boolean;
+  /** Overrides the counts read from `fileDiff`, e.g. when it is only a placeholder. */
+  readonly stat?: DifftasticFileStat | undefined;
+  /** A placeholder whose patch has not arrived: it cannot be expanded yet. */
+  readonly unavailable?: boolean | undefined;
+}
+
+export type DifftasticFileContextMenuHandler = (filePath: string, event: MouseEvent) => void;
+
+/** Shaped like the standard viewer's handle, so `useCodeViewFileReveal` drives either one. */
+export interface DifftasticViewHandle {
+  getInstance(): object | undefined;
+  scrollTo(target: CodeViewScrollTarget): void;
 }
 
 interface DifftasticDiffViewProps {
@@ -49,14 +72,49 @@ interface DifftasticDiffViewProps {
   readonly cacheKey: string;
   readonly layout: "stacked" | "split";
   readonly wordWrap: boolean;
-  readonly selectedFileKey?: string | null;
-  readonly revealRequestId?: number;
   readonly onToggleCollapsed: (fileKey: string) => void;
   /** Makes the file name open the file; omitted where there is nothing local to open. */
   readonly onOpenFile?: ((filePath: string) => void) | undefined;
-  readonly onFileContextMenu?: ((filePath: string, event: MouseEvent) => void) | undefined;
+  readonly onFileContextMenu?: DifftasticFileContextMenuHandler | undefined;
+  /** Receives the handle that scrolls a file into view. */
+  readonly viewerRef?: ((handle: DifftasticViewHandle | null) => void) | undefined;
+  /** Receives the element that scrolls. */
+  readonly containerRef?: ((node: HTMLDivElement | null) => void) | undefined;
   /** Rendered after the last file, inside the scroll container (e.g. a "load more" sentinel). */
   readonly footer?: ReactNode;
+}
+
+/** Calls back once an element comes near the scroll container's viewport. */
+type ObserveNearViewport = (element: Element, onNear: () => void) => () => void;
+
+const NearViewportContext = createContext<ObserveNearViewport | null>(null);
+
+/** Files this far outside the viewport already run difftastic, so scrolling rarely waits. */
+const NEAR_VIEWPORT_MARGIN = "1000px 0px";
+
+function createNearViewportObserver(root: HTMLElement) {
+  const callbacks = new Map<Element, () => void>();
+  const observer = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const onNear = callbacks.get(entry.target);
+        callbacks.delete(entry.target);
+        observer.unobserve(entry.target);
+        onNear?.();
+      }
+    },
+    { root, rootMargin: NEAR_VIEWPORT_MARGIN },
+  );
+  const observe: ObserveNearViewport = (element, onNear) => {
+    callbacks.set(element, onNear);
+    observer.observe(element);
+    return () => {
+      callbacks.delete(element);
+      observer.unobserve(element);
+    };
+  };
+  return { observe, disconnect: () => observer.disconnect() };
 }
 
 /** Renders each changed file with difftastic's structural diff instead of a line patch. */
@@ -67,48 +125,93 @@ export function DifftasticDiffView({
   cacheKey,
   layout,
   wordWrap,
-  selectedFileKey = null,
-  revealRequestId = 0,
   onToggleCollapsed,
   onOpenFile,
   onFileContextMenu,
+  viewerRef,
+  containerRef,
   footer,
 }: DifftasticDiffViewProps) {
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
+  const setScrollRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      setScrollElement(node);
+      containerRef?.(node);
+    },
+    [containerRef],
+  );
+  const nearViewport = useMemo(
+    () =>
+      scrollElement && typeof IntersectionObserver !== "undefined"
+        ? createNearViewportObserver(scrollElement)
+        : null,
+    [scrollElement],
+  );
+  useEffect(() => () => nearViewport?.disconnect(), [nearViewport]);
 
   useEffect(() => {
-    if (!selectedFileKey) return;
-    const target = scrollRef.current?.querySelector<HTMLElement>(
-      `[data-file-key="${CSS.escape(selectedFileKey)}"]`,
-    );
-    target?.scrollIntoView({ block: "start" });
-  }, [selectedFileKey, revealRequestId]);
+    if (!viewerRef) return;
+    viewerRef({
+      getInstance: () => scrollElement ?? undefined,
+      scrollTo: (target) => {
+        if (!scrollElement || target.type !== "item") return;
+        const section = scrollElement.querySelector<HTMLElement>(
+          `[data-file-key="${CSS.escape(target.id)}"]`,
+        );
+        // Scroll only this container: scrollIntoView would also move every scrolling ancestor.
+        if (section) scrollElement.scrollTo({ top: section.offsetTop + (target.offset ?? 0) });
+      },
+    });
+    return () => viewerRef(null);
+  }, [scrollElement, viewerRef]);
 
   return (
-    <div ref={scrollRef} className="difftastic-surface h-full min-h-0 overflow-auto">
-      {files.map((file) => (
-        <DifftasticFileSection
-          key={file.fileKey}
-          environmentId={environmentId}
-          file={file}
-          target={resolveTarget(file.fileDiff)}
-          cacheKey={cacheKey}
-          layout={layout}
-          wordWrap={wordWrap}
-          onToggleCollapsed={onToggleCollapsed}
-          onOpenFile={onOpenFile}
-          onFileContextMenu={onFileContextMenu}
-        />
-      ))}
+    <div ref={setScrollRef} className="difftastic-surface relative h-full min-h-0 overflow-auto">
+      <NearViewportContext value={nearViewport?.observe ?? null}>
+        {files.map((file) => (
+          <DifftasticFileSection
+            key={file.fileKey}
+            environmentId={environmentId}
+            fileKey={file.fileKey}
+            fileDiff={file.fileDiff}
+            collapsed={file.collapsed}
+            stat={file.stat}
+            unavailable={file.unavailable === true}
+            resolveTarget={resolveTarget}
+            cacheKey={cacheKey}
+            layout={layout}
+            wordWrap={wordWrap}
+            onToggleCollapsed={onToggleCollapsed}
+            onOpenFile={onOpenFile}
+            onFileContextMenu={onFileContextMenu}
+          />
+        ))}
+      </NearViewportContext>
       {footer}
     </div>
   );
 }
 
+/** Whether the element has come near the viewport; stays true once it has. */
+function useNearViewport(ref: { readonly current: Element | null }) {
+  const observe = use(NearViewportContext);
+  // Without an observer (tests, very old engines) everything renders at once.
+  const [near, setNear] = useState(() => typeof IntersectionObserver === "undefined");
+  useEffect(() => {
+    if (near || !observe || !ref.current) return;
+    return observe(ref.current, () => setNear(true));
+  }, [near, observe, ref]);
+  return near;
+}
+
 const DifftasticFileSection = memo(function DifftasticFileSection({
   environmentId,
-  file,
-  target,
+  fileKey,
+  fileDiff,
+  collapsed,
+  stat: statOverride,
+  unavailable,
+  resolveTarget,
   cacheKey,
   layout,
   wordWrap,
@@ -117,23 +220,32 @@ const DifftasticFileSection = memo(function DifftasticFileSection({
   onFileContextMenu,
 }: {
   readonly environmentId: EnvironmentId;
-  readonly file: DifftasticFile;
-  readonly target: ReviewStructuralDiffTarget | null;
+  readonly fileKey: string;
+  readonly fileDiff: FileDiffMetadata;
+  readonly collapsed: boolean;
+  readonly stat: DifftasticFileStat | undefined;
+  readonly unavailable: boolean;
+  readonly resolveTarget: (fileDiff: FileDiffMetadata) => ReviewStructuralDiffTarget | null;
   readonly cacheKey: string;
   readonly layout: "stacked" | "split";
   readonly wordWrap: boolean;
   readonly onToggleCollapsed: (fileKey: string) => void;
   readonly onOpenFile: ((filePath: string) => void) | undefined;
-  readonly onFileContextMenu: ((filePath: string, event: MouseEvent) => void) | undefined;
+  readonly onFileContextMenu: DifftasticFileContextMenuHandler | undefined;
 }) {
-  const filePath = resolveFileDiffPath(file.fileDiff);
-  const stat = useMemo(() => getDiffLineStat([file.fileDiff]), [file.fileDiff]);
+  const sectionRef = useRef<HTMLElement>(null);
+  // The body runs the query, so only files near the viewport ask the server for a diff.
+  const near = useNearViewport(sectionRef);
+  const filePath = resolveFileDiffPath(fileDiff);
+  const target = useMemo(() => resolveTarget(fileDiff), [fileDiff, resolveTarget]);
+  const stat = useMemo(() => statOverride ?? getDiffLineStat([fileDiff]), [fileDiff, statOverride]);
+  const expanded = !collapsed && !unavailable;
   const displayPath =
-    file.fileDiff.prevName && file.fileDiff.prevName !== filePath
-      ? `${file.fileDiff.prevName} → ${filePath}`
+    fileDiff.prevName && fileDiff.prevName !== filePath
+      ? `${fileDiff.prevName} → ${filePath}`
       : filePath;
   return (
-    <section data-file-key={file.fileKey} className="border-b border-border/70">
+    <section ref={sectionRef} data-file-key={fileKey} className="border-b border-border/70">
       <header
         className="sticky top-0 z-10 flex h-9 items-center gap-1.5 border-b border-border/60 bg-code px-2 font-sans text-xs"
         onContextMenu={(event) => onFileContextMenu?.(filePath, event)}
@@ -141,12 +253,13 @@ const DifftasticFileSection = memo(function DifftasticFileSection({
         <Button
           size="icon-micro"
           variant="ghost"
-          aria-label={file.collapsed ? `Expand ${filePath}` : `Collapse ${filePath}`}
-          aria-expanded={!file.collapsed}
-          onClick={() => onToggleCollapsed(file.fileKey)}
+          aria-label={expanded ? `Collapse ${filePath}` : `Expand ${filePath}`}
+          aria-expanded={expanded}
+          disabled={unavailable}
+          onClick={() => onToggleCollapsed(fileKey)}
         >
           <ChevronRightIcon
-            className={cn("size-3.5 transition-transform", !file.collapsed && "rotate-90")}
+            className={cn("size-3.5 transition-transform", expanded && "rotate-90")}
           />
         </Button>
         {onOpenFile ? (
@@ -165,23 +278,29 @@ const DifftasticFileSection = memo(function DifftasticFileSection({
           <DiffStatLabel additions={stat.additions} deletions={stat.deletions} />
         </span>
       </header>
-      {file.collapsed ? null : target === null ? (
+      {!expanded ? null : target === null ? (
         <DifftasticNotice>Structural diff is not available for this file.</DifftasticNotice>
-      ) : (
+      ) : near ? (
+        // A new selection starts the file over, folding any gaps the previous one had expanded.
         <DifftasticFileBody
+          key={cacheKey}
           environmentId={environmentId}
           target={target}
           cacheKey={cacheKey}
           layout={layout}
           wordWrap={wordWrap}
         />
+      ) : (
+        <DifftasticNotice>Running difftastic…</DifftasticNotice>
       )}
     </section>
   );
 });
 
 /** Larger files render without syntax colors rather than block on tokenizing. */
-const MAX_HIGHLIGHT_CHARS = 400_000;
+const MAX_HIGHLIGHT_CHARS = 200_000;
+/** Matches the standard diff's worker pool: longer lines (minified code) render plain. */
+const TOKENIZE_MAX_LINE_LENGTH = 1_000;
 
 type SyntaxLines = ReadonlyArray<ReadonlyArray<DifftasticSyntaxToken>>;
 
@@ -196,9 +315,10 @@ const SyntaxContext = createContext<{
  */
 function useSyntaxLines(contents: string, filePath: string): SyntaxLines | null {
   const { resolvedTheme } = useTheme();
-  const key = `${resolvedTheme}:${filePath}:${contents}`;
   const [highlighted, setHighlighted] = useState<{
-    readonly key: string;
+    readonly contents: string;
+    readonly filePath: string;
+    readonly theme: string;
     readonly lines: SyntaxLines;
   } | null>(null);
   useEffect(() => {
@@ -211,25 +331,28 @@ function useSyntaxLines(contents: string, filePath: string): SyntaxLines | null 
         const { tokens } = highlighter.codeToTokens(contents, {
           lang: highlighter.getLoadedLanguages().includes(language) ? language : "text",
           theme: resolveDiffThemeName(resolvedTheme),
+          tokenizeMaxLineLength: TOKENIZE_MAX_LINE_LENGTH,
         });
-        setHighlighted({
-          key: `${resolvedTheme}:${filePath}:${contents}`,
-          lines: toSyntaxLines(tokens),
-        });
+        setHighlighted({ contents, filePath, theme: resolvedTheme, lines: toSyntaxLines(tokens) });
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
   }, [contents, filePath, resolvedTheme]);
-  return highlighted?.key === key ? highlighted.lines : null;
+  // The contents are the query result's own strings, so this is a reference check, not a scan.
+  return highlighted?.contents === contents &&
+    highlighted.filePath === filePath &&
+    highlighted.theme === resolvedTheme
+    ? highlighted.lines
+    : null;
 }
 
-function DifftasticNotice({ children }: { readonly children: React.ReactNode }) {
+function DifftasticNotice({ children }: { readonly children: ReactNode }) {
   return <p className="px-3 py-2 text-2xs text-muted-foreground">{children}</p>;
 }
 
-function DifftasticFileBody({
+const DifftasticFileBody = memo(function DifftasticFileBody({
   environmentId,
   target,
   cacheKey,
@@ -247,23 +370,25 @@ function DifftasticFileBody({
   );
   const [expandedGapIds, setExpandedGapIds] = useState<ReadonlySet<number>>(() => new Set());
   const result = query.data;
+  // Only a changed result is drawn, so only its contents are worth tokenizing.
+  const changed = result?.status === "changed" ? result : null;
   const filePath = target._tag === "turn" ? target.newPath : target.file.newPath;
-  const oldSyntax = useSyntaxLines(result?.oldContents ?? "", filePath);
-  const newSyntax = useSyntaxLines(result?.newContents ?? "", filePath);
+  const oldSyntax = useSyntaxLines(changed?.oldContents ?? "", filePath);
+  const newSyntax = useSyntaxLines(changed?.newContents ?? "", filePath);
   const syntax = useMemo(() => ({ old: oldSyntax, new: newSyntax }), [newSyntax, oldSyntax]);
   const rows = useMemo(
-    () => (result?.status === "changed" ? buildDifftasticRows(result, expandedGapIds) : []),
-    [expandedGapIds, result],
+    () => (changed ? buildDifftasticRows(changed, expandedGapIds) : []),
+    [changed, expandedGapIds],
+  );
+  const expandGap = useCallback(
+    (id: number) => setExpandedGapIds((current) => new Set([...current, id])),
+    [],
   );
 
   if (!result) {
     return query.error ? (
       <DifftasticNotice>
-        <span className="text-error/80">
-          {query.error.includes("review.getStructuralDiff")
-            ? "difftastic is not available here: this environment runs a T3 server without structural diff support. Use the standard diff, or update that server to a build that includes it."
-            : query.error}
-        </span>
+        <span className="text-error/80">{query.error}</span>
       </DifftasticNotice>
     ) : (
       <DifftasticNotice>Running difftastic…</DifftasticNotice>
@@ -280,50 +405,51 @@ function DifftasticFileBody({
     return <DifftasticNotice>No structural changes. Only formatting differs.</DifftasticNotice>;
   }
 
-  const expandGap = (id: number) => setExpandedGapIds((current) => new Set([...current, id]));
-
   return (
-    <div
-      className={cn(
-        "difftastic-code font-mono leading-5",
-        !wordWrap && layout === "stacked" && "overflow-x-auto",
-      )}
-    >
+    <div className={cn("difftastic-code font-mono leading-5", !wordWrap && "overflow-x-auto")}>
       {result.language ? (
         <div className="px-3 pt-1 text-2xs text-muted-foreground/70">{result.language}</div>
       ) : null}
       <SyntaxContext value={syntax}>
         {layout === "split" ? (
-          <SplitRows rows={rows} onExpandGap={expandGap} />
+          <SplitRows rows={rows} wordWrap={wordWrap} onExpandGap={expandGap} />
         ) : (
           <StackedRows rows={rows} wordWrap={wordWrap} onExpandGap={expandGap} />
         )}
       </SyntaxContext>
     </div>
   );
-}
+});
 
-function GapRow({
+const GapRow = memo(function GapRow({
   row,
+  className,
   onExpandGap,
 }: {
   readonly row: DifftasticGapRow;
+  readonly className?: string;
   readonly onExpandGap: (id: number) => void;
 }) {
   return (
     <button
       type="button"
       data-dt-gap
-      className="block w-full px-3 py-0.5 text-start font-sans text-2xs text-muted-foreground"
+      className={cn(
+        "block w-full px-3 py-0.5 text-start font-sans text-2xs text-muted-foreground",
+        className,
+      )}
       onClick={() => onExpandGap(row.id)}
     >
       ⋯ {row.hiddenCount} unchanged {row.hiddenCount === 1 ? "line" : "lines"}
     </button>
   );
-}
+});
 
 const LINE_NUMBER_CLASS =
   "w-12 shrink-0 select-none pe-2 text-end tabular-nums text-muted-foreground/50";
+
+const lineTextClass = (wordWrap: boolean) =>
+  wordWrap ? "wrap-anywhere whitespace-pre-wrap" : "whitespace-pre";
 
 function segmentStyle(segment: Pick<DifftasticSegment, "color" | "fontStyle">) {
   const fontStyle = segment.fontStyle ?? 0;
@@ -336,134 +462,172 @@ function segmentStyle(segment: Pick<DifftasticSegment, "color" | "fontStyle">) {
 }
 
 function LineText({ side, tone }: { readonly side: DifftasticSide; readonly tone: "old" | "new" }) {
-  const syntax = use(SyntaxContext)[tone];
-  const segments = segmentLine(side.text, side.changes, syntax?.[side.lineNumber]);
-  return (
-    <>
-      {segments.map((segment) => (
-        <span
-          key={segment.start}
-          style={segmentStyle(segment)}
-          // Changed tokens keep their syntax color and gain the diff emphasis, like the standard view.
-          {...(segment.novel
-            ? { "data-dt-novel": tone === "old" ? "deletion" : "addition", className: "rounded-xs" }
-            : {})}
-        >
-          {segment.text}
-        </span>
-      ))}
-      {side.text.length === 0 ? "​" : null}
-    </>
+  const syntaxLine = use(SyntaxContext)[tone]?.[side.lineNumber];
+  const segments = useMemo(
+    () => segmentLine(side.text, side.changes, syntaxLine),
+    [side, syntaxLine],
   );
+  return segments.map((segment) => (
+    <span
+      key={segment.start}
+      style={segmentStyle(segment)}
+      // Changed tokens keep their syntax color and gain the diff emphasis, like the standard view.
+      {...(segment.novel
+        ? { "data-dt-novel": tone === "old" ? "deletion" : "addition", className: "rounded-xs" }
+        : {})}
+    >
+      {segment.text}
+    </span>
+  ));
 }
 
 function SplitCell({
   side,
   tone,
   changed,
+  wordWrap,
 }: {
   readonly side: DifftasticSide | null;
   readonly tone: "old" | "new";
   readonly changed: boolean;
+  readonly wordWrap: boolean;
 }) {
+  const divider = tone === "old" && "border-e border-border/40";
   if (side === null) {
-    return <div data-dt-empty className="flex min-w-0 flex-1" />;
+    return <div data-dt-empty className={cn("min-w-0", divider)} />;
   }
   const novel = changed && (side.changes.length > 0 || side.text.length === 0);
   return (
     <div
-      className="flex min-w-0 flex-1"
+      className={cn("flex min-w-0", divider)}
       {...(novel ? { "data-dt-line": tone === "old" ? "deletion" : "addition" } : {})}
     >
       <span data-dt-gutter className={LINE_NUMBER_CLASS}>
         {side.lineNumber + 1}
       </span>
-      <span className="min-w-0 flex-1 pe-2 break-all whitespace-pre-wrap">
+      <span className={cn("min-w-0 flex-1 pe-2", lineTextClass(wordWrap))}>
         <LineText side={side} tone={tone} />
       </span>
     </div>
   );
 }
 
-function SplitRows({
-  rows,
-  onExpandGap,
+const SplitRow = memo(function SplitRow({
+  row,
+  wordWrap,
 }: {
-  readonly rows: ReadonlyArray<DifftasticGapRow | DifftasticLineRow>;
-  readonly onExpandGap: (id: number) => void;
+  readonly row: DifftasticLineRow;
+  readonly wordWrap: boolean;
 }) {
   return (
-    <div>
+    <>
+      <SplitCell side={row.old} tone="old" changed={row.changed} wordWrap={wordWrap} />
+      <SplitCell side={row.new} tone="new" changed={row.changed} wordWrap={wordWrap} />
+    </>
+  );
+});
+
+function SplitRows({
+  rows,
+  wordWrap,
+  onExpandGap,
+}: {
+  readonly rows: ReadonlyArray<DifftasticRow>;
+  readonly wordWrap: boolean;
+  readonly onExpandGap: (id: number) => void;
+}) {
+  // One grid keeps both columns aligned across rows; unwrapped, each column grows to its longest
+  // line and the body scrolls sideways, like the stacked layout.
+  return (
+    <div
+      className={cn(
+        "grid",
+        wordWrap
+          ? "grid-cols-2"
+          : "w-max min-w-full grid-cols-[minmax(max-content,1fr)_minmax(max-content,1fr)]",
+      )}
+    >
       {rows.map((row) =>
         row.kind === "gap" ? (
-          <GapRow key={`gap:${row.id}`} row={row} onExpandGap={onExpandGap} />
+          <GapRow
+            key={`gap:${row.id}`}
+            row={row}
+            className="col-span-2"
+            onExpandGap={onExpandGap}
+          />
         ) : (
-          <div
+          <SplitRow
             key={`${row.old?.lineNumber ?? "-"}:${row.new?.lineNumber ?? "-"}`}
-            className="flex divide-x divide-border/40"
-          >
-            <SplitCell side={row.old} tone="old" changed={row.changed} />
-            <SplitCell side={row.new} tone="new" changed={row.changed} />
-          </div>
+            row={row}
+            wordWrap={wordWrap}
+          />
         ),
       )}
     </div>
   );
 }
 
+const StackedLine = memo(function StackedLine({
+  row,
+  side,
+  wordWrap,
+}: {
+  readonly row: DifftasticLineRow;
+  readonly side: "old" | "new" | "both";
+  readonly wordWrap: boolean;
+}) {
+  const display = side === "old" ? row.old! : row.new!;
+  return (
+    <div
+      className="flex"
+      {...(side === "both" ? {} : { "data-dt-line": side === "old" ? "deletion" : "addition" })}
+    >
+      <span data-dt-gutter className={LINE_NUMBER_CLASS}>
+        {side !== "new" && row.old ? row.old.lineNumber + 1 : ""}
+      </span>
+      <span data-dt-gutter className={LINE_NUMBER_CLASS}>
+        {side !== "old" && row.new ? row.new.lineNumber + 1 : ""}
+      </span>
+      <span
+        className={cn(
+          "w-4 shrink-0 select-none text-center",
+          side === "old" && "text-diff-deletion-foreground",
+          side === "new" && "text-diff-addition-foreground",
+        )}
+      >
+        {side === "old" ? "-" : side === "new" ? "+" : " "}
+      </span>
+      <span className={cn("min-w-0 flex-1 pe-3", lineTextClass(wordWrap))}>
+        <LineText side={display} tone={side === "old" ? "old" : "new"} />
+      </span>
+    </div>
+  );
+});
+
 function StackedRows({
   rows,
   wordWrap,
   onExpandGap,
 }: {
-  readonly rows: ReadonlyArray<DifftasticGapRow | DifftasticLineRow>;
+  readonly rows: ReadonlyArray<DifftasticRow>;
   readonly wordWrap: boolean;
   readonly onExpandGap: (id: number) => void;
 }) {
   const stacked = useMemo(() => stackDifftasticRows(rows), [rows]);
   return (
     <div className={cn(!wordWrap && "w-max min-w-full")}>
-      {stacked.map((entry) => {
-        if (entry.kind === "gap") {
-          return <GapRow key={`gap:${entry.id}`} row={entry} onExpandGap={onExpandGap} />;
-        }
-        const { row, side } = entry;
-        const display = side === "old" ? row.old! : row.new!;
-        const tone = side === "old" ? "old" : "new";
-        return (
-          <div
-            key={`${side}:${row.old?.lineNumber ?? "-"}:${row.new?.lineNumber ?? "-"}`}
-            className="flex"
-            {...(side === "both"
-              ? {}
-              : { "data-dt-line": side === "old" ? "deletion" : "addition" })}
-          >
-            <span data-dt-gutter className={LINE_NUMBER_CLASS}>
-              {side !== "new" && row.old ? row.old.lineNumber + 1 : ""}
-            </span>
-            <span data-dt-gutter className={LINE_NUMBER_CLASS}>
-              {side !== "old" && row.new ? row.new.lineNumber + 1 : ""}
-            </span>
-            <span
-              className={cn(
-                "w-4 shrink-0 select-none text-center",
-                side === "old" && "text-diff-deletion-foreground",
-                side === "new" && "text-diff-addition-foreground",
-              )}
-            >
-              {side === "old" ? "-" : side === "new" ? "+" : " "}
-            </span>
-            <span
-              className={cn(
-                "min-w-0 flex-1 pe-3",
-                wordWrap ? "break-all whitespace-pre-wrap" : "whitespace-pre",
-              )}
-            >
-              <LineText side={display} tone={tone} />
-            </span>
-          </div>
-        );
-      })}
+      {stacked.map((entry) =>
+        entry.kind === "gap" ? (
+          <GapRow key={`gap:${entry.id}`} row={entry} onExpandGap={onExpandGap} />
+        ) : (
+          <StackedLine
+            key={`${entry.side}:${entry.row.old?.lineNumber ?? "-"}:${entry.row.new?.lineNumber ?? "-"}`}
+            row={entry.row}
+            side={entry.side}
+            wordWrap={wordWrap}
+          />
+        ),
+      )}
     </div>
   );
 }

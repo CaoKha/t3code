@@ -56,7 +56,7 @@ import { APP_BASE_NAME } from "~/branding";
 import { PREFERRED_HIGHLIGHTER } from "~/lib/syntaxHighlighting";
 import { cn } from "~/lib/utils";
 import { createPullRequestDiffFileContentsLoader } from "~/lib/diffFileContents";
-import { DifftasticDiffView } from "../diffs/DifftasticDiffView";
+import { DifftasticDiffView, type DifftasticViewHandle } from "../diffs/DifftasticDiffView";
 import {
   buildDiffReviewComment,
   resolveDiffReviewPosition,
@@ -704,7 +704,11 @@ function PullRequestCodeTab({
     [effectiveFoldOverride, setViewed],
   );
 
-  const requestTreeReveal = useCodeViewFileReveal(viewer, scopeKey);
+  const [difftasticViewer, setDifftasticViewer] = useState<DifftasticViewHandle | null>(null);
+  const requestTreeReveal = useCodeViewFileReveal(
+    diffEngine === "difftastic" ? difftasticViewer : viewer,
+    scopeKey,
+  );
   const revealFile = useCallback(
     (path: string) => {
       const item = items.find((candidate) => resolveFileDiffPath(candidate.fileDiff) === path);
@@ -1646,10 +1650,14 @@ function PullRequestCodeTab({
               environmentId={environmentId}
               files={difftasticFiles}
               resolveTarget={resolveDifftasticTarget}
-              cacheKey={`pr:${referenceKey}:${commit ?? "all"}:${detail.updatedAt}`}
+              // The head commit pins the contents; hosts that omit it fall back to the last update.
+              cacheKey={`pr:${referenceKey}:${commit ?? "all"}:${detail.headSha ?? detail.updatedAt}`}
               layout={diffLayout}
               wordWrap={wordWrap}
               onToggleCollapsed={toggleFile}
+              // The tab collapses its header as this scrolls, and reveals files through the handle.
+              containerRef={scrollerRef}
+              viewerRef={setDifftasticViewer}
               footer={renderCodeViewFooter()}
             />
           ) : (

@@ -95,10 +95,12 @@ function renderTabs(
   second?: DesktopPreviewFavicon,
   audio?: { audible?: boolean; audioMuted?: boolean },
   previewRuntimeTabId: ((tabId: string) => string) | null = (tabId) => `runtime:${tabId}`,
+  layout: { side?: "left" | "right"; maximized?: boolean } = {},
 ) {
   return renderToStaticMarkup(
     <RightPanelTabs
       mode="inline"
+      {...layout}
       keybindings={DEFAULT_RESOLVED_KEYBINDINGS}
       getShortcutContext={() => ({
         terminalFocus: false,
@@ -166,6 +168,45 @@ describe("RightPanelTabs preview favicon", () => {
   it("hides a capture while the server session still describes another origin", () => {
     const html = renderTabs(favicon("data:image/png;base64,AAAA", "https://example.com/"));
     expect(html).not.toContain("data:image/png;base64,AAAA");
+  });
+});
+
+describe("RightPanelTabs side", () => {
+  const render = (layout: { side?: "left" | "right"; maximized?: boolean }) =>
+    renderTabs(null, undefined, undefined, undefined, layout);
+  const tabBarClass = (html: string) =>
+    /class="([^"]*)" data-right-panel-tabbar/.exec(html)?.[1]?.split(" ") ?? [];
+
+  it("borders and resizes the right panel from its left edge", () => {
+    const html = render({ side: "right" });
+    expect(html).toContain("border-l border-border");
+    expect(html).toContain("-left-1");
+    expect(html).not.toContain("-right-1");
+  });
+
+  it("borders and resizes the left panel from its right edge", () => {
+    const html = render({ side: "left" });
+    expect(html).toContain("border-r border-border");
+    expect(html).toContain("-right-1");
+    expect(html).not.toContain("-left-1");
+  });
+
+  it("reserves the title bar controls only where the tab bar runs under them", () => {
+    expect(tabBarClass(render({ side: "right" }))).toContain("pr-36");
+    expect(tabBarClass(render({ side: "left" }))).toContain("pr-3");
+    expect(tabBarClass(render({ side: "left" }))).not.toContain("pr-36");
+    // Maximized, the left panel spans the window and reaches the controls again.
+    expect(tabBarClass(render({ side: "left", maximized: true }))).toContain("pr-36");
+  });
+
+  it("clears the traffic lights when the panel sits at the window's left edge", () => {
+    const insets = (html: string) =>
+      tabBarClass(html).some((name) =>
+        name.includes("pl-[var(--workspace-titlebar-content-left)]"),
+      );
+    expect(insets(render({ side: "right" }))).toBe(false);
+    expect(insets(render({ side: "left" }))).toBe(true);
+    expect(insets(render({ side: "right", maximized: true }))).toBe(true);
   });
 });
 

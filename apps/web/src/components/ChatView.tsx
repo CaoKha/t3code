@@ -250,7 +250,7 @@ import { subscribeSnapShotComposerFocus } from "../lib/desktopSnapShot";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { FileMetadataThreadProvider } from "../hooks/FileMetadataThreadProvider";
-import { usePreviewPanelInlineSize } from "../hooks/usePreviewPanelInlineSize";
+import { panelResizeEdge, usePreviewPanelInlineSize } from "../hooks/usePreviewPanelInlineSize";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
   type ThreadPanelPresentation,
@@ -2376,7 +2376,7 @@ export default function ChatView(props: ChatViewProps) {
   const previewPanelInlineSize = usePreviewPanelInlineSize(undefined, {
     container: workspaceLayoutElement,
     widthStorageKey: `t3code:preview-panel-width:${activeThreadKey}`,
-    edge: panelOnLeft ? "right" : "left",
+    edge: panelResizeEdge(panelOnLeft ? "left" : "right"),
   });
   const activeThreadShell = useThreadShell(isServerThread ? activeThreadRef : null);
   const timelineThreadError =
@@ -2508,9 +2508,11 @@ export default function ChatView(props: ChatViewProps) {
   );
   const canMaximizeRightPanel = rightPanelOpen && !shouldUsePlanSidebarSheet;
   const rightPanelMaximized = canMaximizeRightPanel && rightPanelState.maximized === true;
-  // On the left, the panel leaves the title bar's right side, and its controls, to the chat.
-  const inlineRightPanelOwnsTitleBar = rightPanelOpen && !shouldUsePlanSidebarSheet && !panelOnLeft;
-  const inlinePanelOnLeft = rightPanelOpen && panelOnLeft;
+  // On the left, the panel leaves the title bar's right side, and its controls, to the chat
+  // until it is maximized across the window.
+  const inlineRightPanelOwnsTitleBar =
+    rightPanelOpen && !shouldUsePlanSidebarSheet && (!panelOnLeft || rightPanelMaximized);
+  const inlinePanelOnLeft = rightPanelOpen && panelOnLeft && !rightPanelMaximized;
   const [threadPanelPresentation, setThreadPanelPresentation] =
     useState<ThreadPanelPresentation>("inline");
   const [threadPanelPopoverHandle] = useState(PopoverCreateHandle);
@@ -11062,6 +11064,7 @@ export default function ChatView(props: ChatViewProps) {
     rightPanelAvailable: activeProject !== null,
     rightPanelOpen,
     rightPanelShortcutLabel: shortcutLabelForCommand(keybindings, "rightPanel.toggle"),
+    rightPanelSide: panelOnLeft ? "left" : "right",
     onToggleTerminal: toggleTerminalVisibilityStable,
     onToggleThreadPanel: toggleThreadPanelStable,
     onToggleRightPanel: toggleRightPanelStable,
@@ -11192,7 +11195,8 @@ export default function ChatView(props: ChatViewProps) {
               aria-hidden
               className={cn(
                 "pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] h-[var(--workspace-topbar-height)] [-webkit-app-region:no-drag]",
-                inlinePanelOnLeft ? "w-44" : "w-28",
+                // Side, maximize, terminal and panel toggles, plus the thread toggle on the left.
+                inlinePanelOnLeft ? "w-40" : "w-32",
               )}
             />
           ) : null}

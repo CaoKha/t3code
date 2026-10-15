@@ -2,25 +2,34 @@
  * ForkReleaseUpdater - The ElectronUpdater service for builds of a T3 Code fork.
  *
  * A fork's CI (.github/workflows/fork-release.yml) publishes each push as a GitHub
- * release holding the macOS app zip, the Linux CLI archive and SHA256SUMS. Builds made
- * there carry the fork's repository (T3CODE_FORK_RELEASE_REPOSITORY at build time), and
- * this updater, on macOS:
+ * release and points the fixed `channel` release at it: that release holds
+ * `latest.json` (the newest build, with each asset's URL and SHA-256) and
+ * `upstream-status.json` (written by fork-upstream-sync.yml). Both are read through
+ * release download URLs, which the GitHub API rate limit does not cover.
  *
- * - Check: finds the newest fork release on the selected channel with an app for this
- *   arch. When none is newer, it reports the `upstream-status` release (written by
- *   fork-sync-upstream.yml) if upstream could not be merged.
- * - Download: fetches the zip, verifies it against SHA256SUMS and unpacks it.
- * - Install: swaps the running bundle for the new one after the app quits, then relaunches.
+ * Builds made there carry the fork's repository (T3CODE_FORK_RELEASE_REPOSITORY at
+ * build time), and this updater, on macOS:
+ *
+ * - Check: reads `latest.json`. When it names a newer version, that is the update.
+ *   Otherwise it reports `upstream-status.json` when upstream could not be merged.
+ * - Download: fetches the zip, verifies its size and SHA-256 and unpacks it.
+ * - Install: swaps the running bundle for the new one after the app quits, then reopens it.
+ *
+ * The fork publishes a single train, so the update channel only labels errors.
  *
  * @module ForkReleaseUpdater
  */
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import { HttpClient, HttpClientResponse } from "effect/http";
+import { HttpClient } from "effect/http";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
@@ -29,86 +38,119 @@ import * as ElectronUpdater from "./ElectronUpdater.ts";
 
 declare const __T3CODE_BUILD_FORK_RELEASE_REPOSITORY__: string | undefined;
 
-const GitHubAsset = Schema.Struct({
-  name: Schema.String,
-  browser_download_url: Schema.String,
-});
-const GitHubRelease = Schema.Struct({
-  tag_name: Schema.String,
-  draft: Schema.Boolean,
-  prerelease: Schema.Boolean,
-  body: Schema.optional(Schema.NullOr(Schema.String)),
-  assets: Schema.Array(GitHubAsset),
-});
-type GitHubRelease = typeof GitHubRelease.Type;
-const decodeReleases = Schema.decodeUnknownEffect(Schema.Array(GitHubRelease));
-const decodeRelease = Schema.decodeUnknownEffect(GitHubRelease);
+/** The fixed release whose assets CI keeps current with `gh release upload --clobber`. */
+export const CHANNEL_TAG = "channel";
+export const LATEST_MANIFEST = "latest.json";
+export const UPSTREAM_STATUS_FILE = "upstream-status.json";
 
-const UpstreamStatus = Schema.Struct({
+const USER_AGENT = "t3code-fork-updater";
+const REQUEST_TIMEOUT = Duration.seconds(20);
+/** A download that delivers no bytes for this long has stalled. */
+const DOWNLOAD_IDLE_TIMEOUT = Duration.seconds(60);
+
+const ManifestAsset = Schema.Struct({
+  name: Schema.String,
+  url: Schema.String,
+  sha256: Schema.String,
+});
+
+/** `latest.json`: the newest build of the fork, written by fork-release.yml. */
+export const ForkManifest = Schema.Struct({
+  version: Schema.String,
+  tag: Schema.String,
+  commit: Schema.String,
+  /** Keyed by `<platform>-<arch>`, e.g. `darwin-arm64` and `linux-x64`. */
+  assets: Schema.Record(Schema.String, ManifestAsset),
+});
+export type ForkManifest = typeof ForkManifest.Type;
+const decodeManifest = Schema.decodeUnknownEffect(ForkManifest);
+
+/** `upstream-status.json`: the last upstream sync, written by fork-upstream-sync.yml. */
+export const UpstreamStatus = Schema.Struct({
   status: Schema.String,
   tag: Schema.String,
   files: Schema.optional(Schema.Array(Schema.String)),
+  detail: Schema.optional(Schema.String),
 });
-const decodeUpstreamStatus = Schema.decodeUnknownEffect(Schema.fromJsonString(UpstreamStatus));
+export type UpstreamStatus = typeof UpstreamStatus.Type;
+const decodeUpstreamStatus = Schema.decodeUnknownEffect(UpstreamStatus);
 
-export const UPSTREAM_STATUS_TAG = "upstream-status";
-const CHECKSUMS_ASSET = "SHA256SUMS";
+/** A step of a check or download that failed, with a message written for the user. */
+export class ForkUpdateStepError extends Schema.TaggedError<ForkUpdateStepError>()(
+  "ForkUpdateStepError",
+  {
+    detail: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
 
-export interface ForkRelease {
-  readonly tag: string;
+export interface ForkUpdate {
   readonly version: string;
-  readonly notes: string | null;
-  readonly asset: { readonly name: string; readonly url: string };
-  readonly checksumsUrl: string | null;
+  readonly tag: string;
+  readonly commit: string;
+  readonly asset: { readonly name: string; readonly url: string; readonly sha256: string };
 }
 
-const versionParts = (version: string) =>
-  (version.match(/\d+/g) ?? []).map((part) => Number.parseInt(part, 10));
+export type ManifestSelection =
+  | { readonly _tag: "UpdateAvailable"; readonly update: ForkUpdate }
+  | { readonly _tag: "UpToDate" }
+  | { readonly _tag: "Invalid"; readonly reason: string };
 
-/** Numeric, field-by-field order: `0.0.46-nightly.20261015.10003` < `0.0.46-nightly.20261016.10004`. */
-export function compareVersions(left: string, right: string): number {
-  const a = versionParts(left);
-  const b = versionParts(right);
-  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
-    const difference = (a[index] ?? -1) - (b[index] ?? -1);
-    if (difference !== 0) return difference;
+export const channelFileUrl = (repository: string, fileName: string) =>
+  `https://github.com/${repository}/releases/download/${CHANNEL_TAG}/${fileName}`;
+
+/** Safe as a single path segment: no separators, and never `.` or `..`. */
+export const isSafeFileName = (value: string) => /^\w[\w.-]*$/.test(value);
+
+/** A version that orders as semver and is safe to use as a directory name. */
+export const isSafeVersion = (value: string) =>
+  isSafeFileName(value) && parseSemver(value) !== null;
+
+export const isSha256 = (value: string) => /^[0-9a-f]{64}$/i.test(value);
+
+/** Semver order, prerelease fields compared numerically: `…20261015.10009` < `…20261016.10010`. */
+export const isNewerVersion = (candidate: string, current: string) =>
+  compareSemverVersions(candidate, current) > 0;
+
+/** Picks the update `latest.json` offers this platform, if it is newer than the running app. */
+export function selectUpdate(
+  manifest: ForkManifest,
+  options: {
+    readonly repository: string;
+    readonly appVersion: string;
+    readonly platformKey: string;
+  },
+): ManifestSelection {
+  const invalid = (reason: string): ManifestSelection => ({
+    _tag: "Invalid",
+    reason: `The fork update channel is invalid: ${reason}`,
+  });
+  if (!isSafeVersion(manifest.version)) {
+    return invalid(`${LATEST_MANIFEST} names the version "${manifest.version}".`);
   }
-  return 0;
-}
-
-/** The electron-builder zip name for a version: `T3-Code-<version>-<arch>.zip`. */
-export const desktopZipName = (version: string, arch: string) => `T3-Code-${version}-${arch}.zip`;
-
-/** The newest release on a channel that ships an app for `arch`. */
-export function selectLatestRelease(
-  releases: ReadonlyArray<GitHubRelease>,
-  channel: string,
-  arch: string,
-): ForkRelease | null {
-  let latest: ForkRelease | null = null;
-  for (const release of releases) {
-    if (release.draft) continue;
-    const isNightly = release.tag_name.includes("-nightly.");
-    if (channel === "nightly" ? !isNightly : isNightly || release.tag_name.includes("-")) {
-      continue;
-    }
-    const version = release.tag_name.replace(/^v/, "");
-    const asset = release.assets.find(
-      (candidate) => candidate.name === desktopZipName(version, arch),
-    );
-    if (asset === undefined) continue;
-    if (latest !== null && compareVersions(version, latest.version) <= 0) continue;
-    latest = {
-      tag: release.tag_name,
-      version,
-      notes: release.body ?? null,
-      asset: { name: asset.name, url: asset.browser_download_url },
-      checksumsUrl:
-        release.assets.find((candidate) => candidate.name === CHECKSUMS_ASSET)
-          ?.browser_download_url ?? null,
-    };
+  if (!isNewerVersion(manifest.version, options.appVersion)) return { _tag: "UpToDate" };
+  const asset = manifest.assets[options.platformKey];
+  if (asset === undefined) {
+    return invalid(`${manifest.tag} has no build for ${options.platformKey}.`);
   }
-  return latest;
+  if (!isSafeFileName(asset.name)) return invalid(`the asset name "${asset.name}" is not allowed.`);
+  if (!isSha256(asset.sha256)) return invalid(`${asset.name} has no valid SHA-256.`);
+  if (!asset.url.startsWith(`https://github.com/${options.repository}/releases/download/`)) {
+    return invalid(`${asset.name} is not hosted on github.com/${options.repository}.`);
+  }
+  return {
+    _tag: "UpdateAvailable",
+    update: {
+      version: manifest.version,
+      tag: manifest.tag,
+      commit: manifest.commit,
+      asset: { name: asset.name, url: asset.url, sha256: asset.sha256.toLowerCase() },
+    },
+  };
 }
 
 /** The message shown on the update button when upstream could not be merged into the fork. */
@@ -121,40 +163,166 @@ export function describeConflict(repository: string, tag: string, files: Readonl
   );
 }
 
-/** The SHA-256 SHA256SUMS lists for `fileName`, if any. */
-export function checksumFor(checksums: string, fileName: string): string | null {
-  for (const line of checksums.split(/\r?\n/)) {
-    const match = /^([0-9a-fA-F]{64})\s+\*?(\S.*)$/.exec(line.trim());
-    if (match?.[2] === fileName) return match[1]!.toLowerCase();
+/** The message shown when upstream adds workflows, which the sync does not push unreviewed. */
+export function describeNeedsReview(repository: string, tag: string, files: ReadonlyArray<string>) {
+  const which = files.length > 0 ? ` (${files.join(", ")})` : "";
+  return (
+    `Needs review: upstream ${tag} adds GitHub workflows${which}, so it was not merged automatically. ` +
+    `Disable any you do not want under Actions in ${repository}, then run ` +
+    `\`git fetch upstream --tags && git merge ${tag}\` in your clone and push; CI then publishes an update.`
+  );
+}
+
+/** What to tell the user about the last upstream sync; nothing when it merged cleanly. */
+export function describeUpstreamStatus(
+  repository: string,
+  status: UpstreamStatus,
+): Option.Option<string> {
+  const files = status.files ?? [];
+  switch (status.status) {
+    case "conflict":
+      return Option.some(describeConflict(repository, status.tag, files));
+    case "needs-review":
+      return Option.some(describeNeedsReview(repository, status.tag, files));
+    case "push-failed":
+      return Option.some(
+        `Upstream sync failed: ${status.tag} merged cleanly but could not be pushed to ${repository}` +
+          `${status.detail === undefined ? "" : ` (${status.detail})`}. ` +
+          `Check the "Fork upstream sync" workflow run and its FORK_SYNC_SSH_KEY.`,
+      );
+    default:
+      return Option.none();
+  }
+}
+
+/** A user-facing reason for an HTTP status from a release download URL. */
+export function describeHttpStatus(url: string, status: number) {
+  if (status === 404) return `${url} was not found: the fork's CI has not published it yet.`;
+  if (status === 403 || status === 429) {
+    return `GitHub refused ${url} (HTTP ${status}, likely rate limiting). Try again later.`;
+  }
+  return `GitHub answered HTTP ${status} for ${url}.`;
+}
+
+/** The hash in `shasum -a 256 <file>` output. */
+export function parseShasumOutput(stdout: string): string | null {
+  const hash = stdout.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  return isSha256(hash) ? hash : null;
+}
+
+/**
+ * Why the running bundle cannot be replaced in place, if it cannot. Checked before
+ * quitting, so a failed install leaves the app running and recoverable.
+ */
+export function describeInstallBlocker(bundlePath: string): string | null {
+  if (!bundlePath.endsWith(".app")) {
+    return `Could not locate the running app bundle (${bundlePath}).`;
+  }
+  if (bundlePath.includes("/AppTranslocation/")) {
+    return (
+      "macOS is running T3 Code from a temporary read-only copy (App Translocation). " +
+      "Move T3 Code to /Applications, open it from there and install the update again."
+    );
   }
   return null;
 }
 
-/** The fork whose releases this build updates from, baked in by the fork's CI. */
-export const forkReleaseRepository = Effect.gen(function* () {
-  if ((yield* HostProcess.Platform) !== "darwin") return Option.none<string>();
-  const environment = yield* HostProcess.Environment;
+/**
+ * The fork whose releases this build updates from. Packaged apps only use the
+ * repository baked in by the fork's CI; unpackaged (development) runs may override it
+ * with T3CODE_FORK_RELEASE_REPOSITORY.
+ */
+export function resolveForkReleaseRepository(options: {
+  readonly platform: string;
+  readonly isPackaged: boolean;
+  readonly runtimeOverride: string | undefined;
+  readonly buildTime: string | undefined;
+}): Option.Option<string> {
+  if (options.platform !== "darwin") return Option.none();
   const repository =
-    environment.T3CODE_FORK_RELEASE_REPOSITORY?.trim() ||
-    (typeof __T3CODE_BUILD_FORK_RELEASE_REPOSITORY__ === "undefined"
-      ? ""
-      : __T3CODE_BUILD_FORK_RELEASE_REPOSITORY__.trim());
-  return /^[\w.-]+\/[\w.-]+$/.test(repository) ? Option.some(repository) : Option.none<string>();
+    (options.isPackaged ? "" : options.runtimeOverride?.trim()) || options.buildTime?.trim() || "";
+  return /^[\w.-]+\/[\w.-]+$/.test(repository) ? Option.some(repository) : Option.none();
+}
+
+export const forkReleaseRepository = Effect.gen(function* () {
+  const electronApp = yield* ElectronApp.ElectronApp;
+  const isPackaged = yield* electronApp.metadata.pipe(
+    Effect.map((metadata) => metadata.isPackaged),
+    // Unknown counts as packaged: only the baked-in repository is trusted then.
+    Effect.orElseSucceed(() => true),
+  );
+  return resolveForkReleaseRepository({
+    platform: yield* HostProcess.Platform,
+    isPackaged,
+    runtimeOverride: (yield* HostProcess.Environment).T3CODE_FORK_RELEASE_REPOSITORY,
+    buildTime:
+      typeof __T3CODE_BUILD_FORK_RELEASE_REPOSITORY__ === "undefined"
+        ? undefined
+        : __T3CODE_BUILD_FORK_RELEASE_REPOSITORY__,
+  });
 });
 
+/**
+ * Swaps the bundle once the app has quit. Arguments: $1 the staged app, $2 the running
+ * bundle, $3 "1" to reopen, $4 the downloaded version's folder (removed after success).
+ *
+ * The copy goes to "$2.new" first, so the running bundle is only moved aside once a
+ * complete replacement exists, and is moved back if the swap fails. If the app has not
+ * exited after 120s, the helper gives up without touching it. Whatever happens after the
+ * app exits, the app (new or old) is reopened.
+ */
+export const INSTALL_SCRIPT = [
+  'app_pid="$PPID"',
+  "(",
+  "  trap '' HUP",
+  "  waited=0",
+  '  while kill -0 "$app_pid" 2>/dev/null; do',
+  '    [ "$waited" -ge 240 ] && exit 1',
+  "    sleep 0.5",
+  "    waited=$((waited + 1))",
+  "  done",
+  '  rm -rf "$2.new" "$2.previous"',
+  '  if ditto "$1" "$2.new" && mv "$2" "$2.previous"; then',
+  '    if mv "$2.new" "$2"; then',
+  '      rm -rf "$2.previous" "$4"',
+  '      xattr -dr com.apple.quarantine "$2" 2>/dev/null',
+  "    else",
+  '      mv "$2.previous" "$2"',
+  "    fi",
+  "  fi",
+  '  rm -rf "$2.new"',
+  '  [ "$3" = "1" ] && open "$2"',
+  ") </dev/null >/dev/null 2>&1 &",
+].join("\n");
+
 type Listener = (...args: Array<unknown>) => void;
+
+interface StagedUpdate {
+  readonly version: string;
+  readonly appPath: string;
+  readonly versionDir: string;
+}
+
+const isForkUpdateStepError = Schema.is(ForkUpdateStepError);
+const stepError = (detail: string, cause?: unknown) => new ForkUpdateStepError({ detail, cause });
+
+/** Keeps a step's own message; anything else (file system, process) gets `detail`. */
+const orStepError =
+  (detail: string) =>
+  (error: unknown): ForkUpdateStepError =>
+    isForkUpdateStepError(error) ? error : stepError(detail, error);
 
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.fn("ForkReleaseUpdater.make")(function* (repository: string) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  // Release asset URLs answer with a redirect to GitHub's download CDN.
+  // Release download URLs answer with a redirect to GitHub's download CDN.
   const httpClient = (yield* HttpClient.HttpClient).pipe(HttpClient.followRedirects(5));
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const electronApp = yield* ElectronApp.ElectronApp;
   const appVersion = (yield* electronApp.metadata.pipe(Effect.orDie)).appVersion;
   const executablePath = yield* HostProcess.ExecutablePath;
-  const arch = yield* HostProcess.Architecture;
+  const platformKey = `darwin-${yield* HostProcess.Architecture}`;
   const environment = yield* HostProcess.Environment;
   const home = yield* HostProcess.HomeDirectory;
   const updatesDir = path.join(
@@ -162,6 +330,8 @@ export const make = Effect.fn("ForkReleaseUpdater.make")(function* (repository: 
     "runtime",
     "fork-updates",
   );
+  // Leftovers of an earlier download or install; a fresh download starts clean anyway.
+  yield* fileSystem.remove(updatesDir, { recursive: true, force: true }).pipe(Effect.ignore);
 
   const listeners = new Map<string, Set<Listener>>();
   const emit = (eventName: string, ...args: Array<unknown>) =>
@@ -169,67 +339,76 @@ export const make = Effect.fn("ForkReleaseUpdater.make")(function* (repository: 
       for (const listener of listeners.get(eventName) ?? []) listener(...args);
     });
 
-  let channel: string | null = null;
-  let pending: ForkRelease | null = null;
-  let staged: { readonly version: string; readonly appPath: string } | null = null;
+  const channelRef = yield* Ref.make<string | null>(null);
+  const pendingRef = yield* Ref.make<ForkUpdate | null>(null);
+  const stagedRef = yield* Ref.make<StagedUpdate | null>(null);
 
-  // GitHub's API rejects requests without a User-Agent with HTTP 403.
-  const apiHeaders = { accept: "application/vnd.github+json", "user-agent": "t3code-fork" };
-  const getJson = (url: string) =>
-    httpClient.get(url, { headers: apiHeaders }).pipe(
-      Effect.flatMap(HttpClientResponse.filterStatusOk),
-      Effect.flatMap((response) => response.json),
+  const requestHeaders = { "user-agent": USER_AGENT };
+  const request = (url: string) =>
+    httpClient.get(url, { headers: requestHeaders }).pipe(
+      Effect.mapError((cause) => stepError(`Could not reach ${url}.`, cause)),
+      Effect.timeoutOrElse({
+        duration: REQUEST_TIMEOUT,
+        orElse: () => Effect.fail(stepError(`Timed out waiting for ${url}.`)),
+      }),
+      Effect.filterOrFail(
+        (response) => response.status === 200,
+        (response) => stepError(describeHttpStatus(url, response.status)),
+      ),
     );
 
-  // Unknown or unreadable status counts as "nothing to report".
-  const readUpstreamConflict = getJson(
-    `https://api.github.com/repos/${repository}/releases/tags/${UPSTREAM_STATUS_TAG}`,
-  ).pipe(
-    Effect.flatMap(decodeRelease),
-    Effect.flatMap((release) => decodeUpstreamStatus(release.body ?? "")),
-    Effect.map((status) =>
-      status.status === "conflict"
-        ? Option.some(describeConflict(repository, status.tag, status.files ?? []))
-        : Option.none<string>(),
-    ),
+  const readChannelFile = Effect.fn("ForkReleaseUpdater.readChannelFile")(function* (
+    fileName: string,
+  ) {
+    const url = channelFileUrl(repository, fileName);
+    const response = yield* request(url);
+    return yield* response.json.pipe(
+      Effect.timeoutOrElse({
+        duration: REQUEST_TIMEOUT,
+        orElse: () => Effect.fail(stepError(`Timed out reading ${url}.`)),
+      }),
+      Effect.mapError(orStepError(`${url} is not valid JSON.`)),
+    );
+  });
+
+  // A missing or unreadable status counts as "nothing to report".
+  const readUpstreamProblem = readChannelFile(UPSTREAM_STATUS_FILE).pipe(
+    Effect.flatMap(decodeUpstreamStatus),
+    Effect.map((status) => describeUpstreamStatus(repository, status)),
     Effect.orElseSucceed(() => Option.none<string>()),
   );
 
-  const checkForUpdates = Effect.gen(function* () {
+  const checkForUpdates = Effect.fn("ForkReleaseUpdater.checkForUpdates")(function* () {
+    const channel = yield* Ref.get(channelRef);
+    const checkError = (detail: string, cause?: unknown) =>
+      new ElectronUpdater.ElectronUpdaterCheckForUpdatesError({ channel, detail, cause });
     yield* emit("checking-for-update");
-    const releases = yield* getJson(
-      `https://api.github.com/repos/${repository}/releases?per_page=30`,
-    ).pipe(
-      Effect.flatMap(decodeReleases),
-      Effect.mapError(
-        (cause) =>
-          new ElectronUpdater.ElectronUpdaterCheckForUpdatesError({
-            channel,
-            detail: `Could not read releases from github.com/${repository}.`,
-            cause,
-          }),
+    yield* Ref.set(pendingRef, null);
+    const manifest = yield* readChannelFile(LATEST_MANIFEST).pipe(
+      Effect.flatMap((json) =>
+        decodeManifest(json).pipe(
+          Effect.mapError((cause) => stepError(`${LATEST_MANIFEST} is malformed.`, cause)),
+        ),
+      ),
+      Effect.mapError((error) =>
+        checkError(`Could not check github.com/${repository} for updates: ${error.detail}`, error),
       ),
     );
-    const latest = selectLatestRelease(releases, channel ?? "latest", arch);
-    if (latest !== null && compareVersions(latest.version, appVersion) > 0) {
-      pending = latest;
-      yield* emit("update-available", { version: latest.version, releaseNotes: latest.notes });
+    const selection = selectUpdate(manifest, { repository, appVersion, platformKey });
+    if (selection._tag === "Invalid") return yield* checkError(selection.reason);
+    if (selection._tag === "UpdateAvailable") {
+      const { update } = selection;
+      yield* Ref.set(pendingRef, update);
+      yield* emit("update-available", {
+        version: update.version,
+        releaseNotes: `Built from ${repository}@${update.commit.slice(0, 12)} (${update.tag}).`,
+      });
       return;
     }
-    pending = null;
-    const conflict = yield* readUpstreamConflict;
-    if (Option.isSome(conflict)) {
-      return yield* new ElectronUpdater.ElectronUpdaterCheckForUpdatesError({
-        channel,
-        detail: conflict.value,
-        cause: conflict.value,
-      });
-    }
+    const upstreamProblem = yield* readUpstreamProblem;
+    if (Option.isSome(upstreamProblem)) return yield* checkError(upstreamProblem.value);
     yield* emit("update-not-available");
   });
-
-  const downloadFailure = (detail: string, cause?: unknown) =>
-    new ElectronUpdater.ElectronUpdaterDownloadUpdateError({ channel, detail, cause });
 
   const run = (command: string, args: ReadonlyArray<string>) =>
     Effect.scoped(
@@ -249,158 +428,184 @@ export const make = Effect.fn("ForkReleaseUpdater.make")(function* (repository: 
       }),
     );
 
-  const downloadTo = (url: string, filePath: string) =>
-    Effect.gen(function* () {
-      const response = yield* httpClient
-        .get(url, { headers: { "user-agent": "t3code-fork" } })
-        .pipe(Effect.flatMap(HttpClientResponse.filterStatusOk));
-      const total = Number(response.headers["content-length"] ?? 0);
-      let received = 0;
-      let lastPercent = -1;
-      yield* response.stream.pipe(
-        Stream.tap((chunk) => {
-          received += chunk.length;
-          const percent = total > 0 ? Math.floor((received / total) * 100) : 0;
-          if (percent === lastPercent) return Effect.void;
-          lastPercent = percent;
-          return emit("download-progress", { percent });
+  const sha256Of = (filePath: string) =>
+    run("/usr/bin/shasum", ["-a", "256", filePath]).pipe(
+      Effect.mapError((cause) => stepError("Could not checksum the download.", cause)),
+      Effect.flatMap(({ stdout, exitCode }) => {
+        const hash = parseShasumOutput(stdout);
+        return exitCode === 0 && hash !== null
+          ? Effect.succeed(hash)
+          : Effect.fail(stepError(`Could not checksum the download (shasum exited ${exitCode}).`));
+      }),
+    );
+
+  const downloadTo = Effect.fn("ForkReleaseUpdater.downloadTo")(function* (
+    asset: ForkUpdate["asset"],
+    filePath: string,
+  ) {
+    const response = yield* request(asset.url);
+    const lengthHeader = Number.parseInt(response.headers["content-length"] ?? "", 10);
+    const total = Number.isFinite(lengthHeader) && lengthHeader > 0 ? lengthHeader : null;
+    const received = yield* Ref.make(0);
+    const lastPercent = yield* Ref.make(-1);
+    yield* response.stream.pipe(
+      Stream.mapError((cause) => stepError(`The download of ${asset.name} failed.`, cause)),
+      Stream.timeoutOrElse({
+        duration: DOWNLOAD_IDLE_TIMEOUT,
+        orElse: () =>
+          Stream.fail(stepError(`The download of ${asset.name} stalled for 60 seconds.`)),
+      }),
+      Stream.tap((chunk) =>
+        Effect.gen(function* () {
+          const bytes = yield* Ref.updateAndGet(received, (count) => count + chunk.length);
+          if (total === null) return;
+          const percent = Math.min(100, Math.floor((bytes / total) * 100));
+          if ((yield* Ref.getAndSet(lastPercent, percent)) !== percent) {
+            yield* emit("download-progress", { percent });
+          }
         }),
-        Stream.run(fileSystem.sink(filePath)),
-      );
-    });
-
-  const downloadUpdate = Effect.gen(function* () {
-    const release = pending;
-    if (release === null) return yield* downloadFailure("No update is available to download.");
-    const versionDir = path.join(updatesDir, release.version);
-    const zipPath = path.join(versionDir, release.asset.name);
-    const stageDir = path.join(versionDir, "stage");
-
-    yield* fileSystem.remove(versionDir, { recursive: true, force: true });
-    yield* fileSystem.makeDirectory(stageDir, { recursive: true });
-    yield* downloadTo(release.asset.url, zipPath).pipe(
-      Effect.mapError((cause) =>
-        downloadFailure(`Could not download ${release.asset.name}.`, cause),
       ),
+      Stream.run(fileSystem.sink(filePath)),
+      Effect.mapError(orStepError(`Could not save ${asset.name}.`)),
     );
-
-    if (release.checksumsUrl === null) {
-      return yield* downloadFailure(`Release ${release.tag} has no ${CHECKSUMS_ASSET}.`);
-    }
-    const checksums = yield* httpClient
-      .get(release.checksumsUrl, { headers: { "user-agent": "t3code-fork" } })
-      .pipe(
-        Effect.flatMap(HttpClientResponse.filterStatusOk),
-        Effect.flatMap((response) => response.text),
-        Effect.mapError((cause) => downloadFailure(`Could not read ${CHECKSUMS_ASSET}.`, cause)),
+    const bytes = yield* Ref.get(received);
+    if (total !== null && bytes !== total) {
+      return yield* stepError(
+        `The download of ${asset.name} ended early (${bytes} of ${total} bytes).`,
       );
-    const expected = checksumFor(checksums, release.asset.name);
-    const actual = yield* run("/usr/bin/shasum", ["-a", "256", zipPath]).pipe(
-      Effect.map((result) => result.stdout.split(/\s+/)[0]?.toLowerCase() ?? ""),
-      Effect.mapError((cause) => downloadFailure("Could not checksum the download.", cause)),
-    );
-    if (expected === null || expected !== actual) {
-      return yield* downloadFailure(`${release.asset.name} does not match ${CHECKSUMS_ASSET}.`);
+    }
+  });
+
+  const downloadPending = Effect.gen(function* () {
+    const update = yield* Ref.get(pendingRef);
+    if (update === null) return yield* stepError("No update is available to download.");
+    // Only one download is kept: earlier or half-finished ones go first.
+    yield* Ref.set(stagedRef, null);
+    yield* fileSystem.remove(updatesDir, { recursive: true, force: true });
+    const versionDir = path.join(updatesDir, update.version);
+    const zipPath = path.join(versionDir, update.asset.name);
+    const stageDir = path.join(versionDir, "stage");
+    yield* fileSystem.makeDirectory(stageDir, { recursive: true });
+
+    yield* downloadTo(update.asset, zipPath);
+    if ((yield* sha256Of(zipPath)) !== update.asset.sha256) {
+      return yield* stepError(
+        `${update.asset.name} does not match its SHA-256 in ${LATEST_MANIFEST}.`,
+      );
     }
 
     const unzip = yield* run("/usr/bin/ditto", ["-x", "-k", zipPath, stageDir]).pipe(
-      Effect.mapError((cause) => downloadFailure(`Could not unpack ${release.asset.name}.`, cause)),
+      Effect.mapError((cause) => stepError(`Could not unpack ${update.asset.name}.`, cause)),
     );
-    const appName = (yield* fileSystem
-      .readDirectory(stageDir)
-      .pipe(Effect.orElseSucceed(() => []))).find((name) => name.endsWith(".app"));
+    const appName = (yield* fileSystem.readDirectory(stageDir)).find((name) =>
+      name.endsWith(".app"),
+    );
     if (unzip.exitCode !== 0 || appName === undefined) {
-      return yield* downloadFailure(`${release.asset.name} holds no app bundle.`);
+      return yield* stepError(`${update.asset.name} holds no app bundle.`);
     }
     yield* fileSystem.remove(zipPath, { force: true }).pipe(Effect.ignore);
-    staged = { version: release.version, appPath: path.join(stageDir, appName) };
-    yield* emit("update-downloaded", { version: release.version });
-  }).pipe(
-    Effect.catchTags({
-      PlatformError: (cause) =>
-        Effect.fail(downloadFailure("Could not prepare the update folder.", cause)),
-    }),
-  );
+    yield* Ref.set(stagedRef, {
+      version: update.version,
+      appPath: path.join(stageDir, appName),
+      versionDir,
+    });
+    yield* emit("update-downloaded", { version: update.version });
+  });
 
-  // The helper backgrounds itself so it outlives this app: it waits for the app
-  // ($PPID of the launcher) to exit, swaps the bundle and opens the new one.
-  const INSTALL_SCRIPT = [
-    'app_pid="$PPID"',
-    "(",
-    "  trap '' HUP",
-    '  while kill -0 "$app_pid" 2>/dev/null; do sleep 0.5; done',
-    '  rm -rf "$2.previous"',
-    '  mv "$2" "$2.previous" || exit 1',
-    '  if ditto "$1" "$2"; then rm -rf "$2.previous"; else rm -rf "$2"; mv "$2.previous" "$2"; fi',
-    '  xattr -dr com.apple.quarantine "$2" 2>/dev/null',
-    '  [ "$3" = "1" ] && open "$2"',
-    ") </dev/null >/dev/null 2>&1 &",
-  ].join("\n");
+  const downloadUpdate = Effect.fn("ForkReleaseUpdater.downloadUpdate")(function* () {
+    const channel = yield* Ref.get(channelRef);
+    yield* downloadPending.pipe(
+      Effect.mapError(orStepError("Could not prepare the update folder.")),
+      Effect.mapError(
+        (error) =>
+          new ElectronUpdater.ElectronUpdaterDownloadUpdateError({
+            channel,
+            detail: error.detail,
+            cause: error,
+          }),
+      ),
+    );
+  });
 
-  const quitAndInstall = ({
+  const quitAndInstall = Effect.fn("ForkReleaseUpdater.quitAndInstall")(function* ({
     isSilent,
     isForceRunAfter,
   }: {
     readonly isSilent: boolean;
     readonly isForceRunAfter: boolean;
-  }) =>
-    Effect.gen(function* () {
-      const update = staged;
-      if (update === null) return yield* Effect.fail("No downloaded update is ready to install.");
-      // .../T3 Code (Nightly).app/Contents/MacOS/<binary>
-      const bundlePath = path.resolve(executablePath, "..", "..", "..");
-      if (!bundlePath.endsWith(".app")) {
-        return yield* Effect.fail(
-          `Could not locate the running app bundle from ${executablePath}.`,
-        );
-      }
-      yield* Effect.scoped(
-        spawner
-          .spawn(
-            ChildProcess.make(
-              "/bin/bash",
-              [
-                "-c",
-                INSTALL_SCRIPT,
-                "t3-fork-install",
-                update.appPath,
-                bundlePath,
-                isForceRunAfter ? "1" : "0",
-              ],
-              { stdout: "ignore", stderr: "ignore", detached: false },
-            ),
-          )
-          .pipe(Effect.flatMap((handle) => handle.exitCode)),
-      );
-      yield* electronApp.quit;
-    }).pipe(
-      Effect.mapError(
-        (cause) =>
-          new ElectronUpdater.ElectronUpdaterQuitAndInstallError({
-            channel,
-            isSilent,
-            isForceRunAfter,
-            cause,
-          }),
-      ),
+  }) {
+    const channel = yield* Ref.get(channelRef);
+    const installError = (detail: string, cause?: unknown) =>
+      new ElectronUpdater.ElectronUpdaterQuitAndInstallError({
+        channel,
+        isSilent,
+        isForceRunAfter,
+        detail,
+        cause,
+      });
+    const update = yield* Ref.get(stagedRef);
+    if (update === null) return yield* installError("No downloaded update is ready to install.");
+    // .../T3 Code (Nightly).app/Contents/MacOS/<binary>
+    const bundlePath = path.resolve(executablePath, "..", "..", "..");
+    const blocker = describeInstallBlocker(bundlePath);
+    if (blocker !== null) return yield* installError(blocker);
+    const parentDir = path.dirname(bundlePath);
+    const writable = yield* fileSystem.access(parentDir, { writable: true }).pipe(
+      Effect.as(true),
+      Effect.orElseSucceed(() => false),
     );
+    if (!writable) {
+      return yield* installError(
+        `T3 Code cannot replace itself because ${parentDir} is not writable. ` +
+          "Move the app to a folder you can write to, or install the update by hand.",
+      );
+    }
+    const stagedExists = yield* fileSystem
+      .exists(update.appPath)
+      .pipe(Effect.orElseSucceed(() => false));
+    if (!stagedExists) {
+      return yield* installError("The downloaded update is gone; download it again.");
+    }
+
+    yield* Effect.scoped(
+      spawner
+        .spawn(
+          ChildProcess.make(
+            "/bin/bash",
+            [
+              "-c",
+              INSTALL_SCRIPT,
+              "t3-fork-install",
+              update.appPath,
+              bundlePath,
+              isForceRunAfter ? "1" : "0",
+              update.versionDir,
+            ],
+            // `detached: false` is required: for a detached child (the default on
+            // macOS) the spawner's scope finalizer kills the whole process group,
+            // which would take the backgrounded installer down with the launcher.
+            { stdout: "ignore", stderr: "ignore", detached: false },
+          ),
+        )
+        .pipe(Effect.flatMap((handle) => handle.exitCode)),
+    ).pipe(
+      Effect.mapError((cause) => installError("Could not start the update installer.", cause)),
+    );
+    yield* electronApp.quit;
+  });
 
   return ElectronUpdater.ElectronUpdater.of({
-    selfConfigured: true,
     setFeedURL: () => Effect.void,
     setAutoDownload: () => Effect.void,
     setAutoInstallOnAppQuit: () => Effect.void,
-    setChannel: (next) =>
-      Effect.sync(() => {
-        channel = next;
-      }),
+    setChannel: (next) => Ref.set(channelRef, next),
     setAllowPrerelease: () => Effect.void,
     allowDowngrade: Effect.succeed(false),
     setAllowDowngrade: () => Effect.void,
     setFullChangelog: () => Effect.void,
     setDisableDifferentialDownload: () => Effect.void,
-    checkForUpdates,
-    downloadUpdate,
+    checkForUpdates: checkForUpdates(),
+    downloadUpdate: downloadUpdate(),
     quitAndInstall,
     on: (eventName, listener) => {
       const untypedListener = listener as unknown as Listener;
@@ -415,3 +620,12 @@ export const make = Effect.fn("ForkReleaseUpdater.make")(function* (repository: 
     },
   });
 });
+
+/** Fork builds update from their fork's `channel` release; every other build uses electron-updater. */
+export const layer = Layer.effect(
+  ElectronUpdater.ElectronUpdater,
+  Effect.gen(function* () {
+    const repository = yield* forkReleaseRepository;
+    return Option.isSome(repository) ? yield* make(repository.value) : ElectronUpdater.make;
+  }),
+);

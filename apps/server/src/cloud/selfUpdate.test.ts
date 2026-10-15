@@ -1,12 +1,14 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { expect, it } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import { ServerSelfUpdateError, ThreadId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
@@ -420,6 +422,47 @@ it.layer(NodeServices.layer)("server self update", (it) => {
       );
       yield* Deferred.succeed(accepted, "launcher-id");
       expect((yield* Fiber.join(first)).updateId).toBe("launcher-id");
+    }),
+  );
+});
+
+describe("resolveServerSelfUpdateCapability", () => {
+  it("prefers the desktop app, then the boot service, then respawn", () => {
+    const resolve = (desktopManaged: boolean, launcherManaged: boolean, respawnManaged: boolean) =>
+      ServerSelfUpdate.resolveServerSelfUpdateCapability({
+        desktopManaged,
+        launcherManaged,
+        respawnManaged,
+      });
+    expect(resolve(true, true, true)).toBe("desktop-managed");
+    expect(resolve(false, true, true)).toBe("boot-service");
+    expect(resolve(false, false, true)).toBe("respawn");
+    expect(resolve(false, false, false)).toBeNull();
+  });
+});
+
+it.layer(NodeServices.layer)("respawn update directory", (it) => {
+  const readDir = (platform: NodeJS.Platform, dir: string) =>
+    ServerSelfUpdate.respawnUpdateDir.pipe(
+      Effect.provideService(HostProcess.Platform, platform),
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({ env: { [ServerSelfUpdate.SELF_UPDATE_DIR_ENV]: dir } }),
+        ),
+      ),
+    );
+
+  it.effect("accepts an absolute directory", () =>
+    Effect.gen(function* () {
+      expect(yield* readDir("linux", " /srv/t3 ")).toEqual(Option.some("/srv/t3"));
+    }),
+  );
+
+  it.effect("ignores a relative directory, an empty value and Windows", () =>
+    Effect.gen(function* () {
+      expect(Option.isNone(yield* readDir("linux", "t3"))).toBe(true);
+      expect(Option.isNone(yield* readDir("linux", "  "))).toBe(true);
+      expect(Option.isNone(yield* readDir("win32", "C:\\t3"))).toBe(true);
     }),
   );
 });

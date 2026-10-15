@@ -10,6 +10,7 @@ import {
 import { isElectron } from "~/env";
 import {
   getPreviewPanelMaxWidth,
+  panelResizeEdge,
   type PreviewPanelInlineSize,
   usePreviewPanelInlineSize,
 } from "~/hooks/usePreviewPanelInlineSize";
@@ -61,7 +62,7 @@ function ResizablePreviewPanelShell(props: PreviewPanelShellProps) {
     enabled: props.mode === "inline" && !props.maximized,
     widthStorageKey: props.widthStorageKey,
     defaultWidth: props.defaultWidth,
-    edge: props.side === "left" ? "right" : "left",
+    edge: panelResizeEdge(props.side),
   });
   return <PreviewPanelShellFrame {...props} inlineSize={inlineSize} hostRef={hostRef} />;
 }
@@ -150,10 +151,7 @@ function PreviewPanelShellFrame(
       data-preview-panel-maximized={maximized ? "true" : "false"}
     >
       {isInline && !maximized ? (
-        <RightPanelResizeHandle
-          handlers={handlers}
-          side={props.side === "left" ? "right" : "left"}
-        />
+        <RightPanelResizeHandle handlers={handlers} side={panelResizeEdge(props.side)} />
       ) : null}
       <div className={cn("h-full min-h-0 w-full", collapsible && "overflow-clip")}>
         <div

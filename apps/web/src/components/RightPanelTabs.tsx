@@ -869,6 +869,8 @@ function SortableTab({
 
 export function RightPanelTabs(props: RightPanelTabsProps) {
   const ownsDesktopTitleBar = isElectron && props.mode === "inline";
+  // On the left the title bar controls sit over the chat, until the panel is maximized under them.
+  const reachesTitleBarControls = props.side !== "left" || props.maximized === true;
   const browserProfiles = useBrowserDefaults().profiles;
   const { resolvedTheme } = useTheme();
   const tabListRef = useRef<HTMLDivElement>(null);
@@ -1175,13 +1177,12 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
           // The sheet overlays from the viewport top, so its tab bar keeps
           // the titlebar's height: a compact row re-centers the layout
           // controls a few pixels higher and the cluster jumps on open.
-          // On the left, the panel no longer sits under the window's title bar controls.
-          props.mode === "inline" && !props.layoutControls && props.side !== "left"
-            ? "pr-28"
+          props.mode === "inline" && !props.layoutControls && reachesTitleBarControls
+            ? "pr-36"
             : "pr-3",
           ownsDesktopTitleBar && "drag-region",
           ownsDesktopTitleBar &&
-            props.side !== "left" &&
+            reachesTitleBarControls &&
             "wco:pr-(--workspace-native-controls-inset)",
           props.mode === "inline" &&
             (props.maximized || props.side === "left") &&
@@ -1470,14 +1471,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
           </div>
         ) : null}
         {props.layoutControls}
-        {ownsDesktopTitleBar && !props.layoutControls ? (
+        {ownsDesktopTitleBar && !props.layoutControls && reachesTitleBarControls ? (
           // Keeps the tabs clear of the window controls when the layout toggles live elsewhere.
-          <span aria-hidden className="hidden w-24 shrink-0 wco:block" />
+          <span aria-hidden className="hidden w-32 shrink-0 wco:block" />
         ) : null}
         {ownsDesktopTitleBar ? (
           <span
             aria-hidden
-            className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] h-[var(--workspace-topbar-height)] w-28 [-webkit-app-region:no-drag]"
+            className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] h-[var(--workspace-topbar-height)] w-32 [-webkit-app-region:no-drag]"
           />
         ) : null}
       </div>

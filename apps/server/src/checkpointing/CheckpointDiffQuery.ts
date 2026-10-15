@@ -137,7 +137,7 @@ export const make = Effect.gen(function* () {
             threadId: input.threadId,
           }),
       ),
-      Effect.withSpan("checkpoint.turnDiff.lookupContext"),
+      Effect.withSpan("checkpoint.lookupContext"),
     );
     const completedRunIds = new Set(
       projection.runs.filter((run) => run.status === "completed").map((run) => run.id),

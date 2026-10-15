@@ -28,6 +28,7 @@ import {
   type ChatWidth,
   type DiffEngine,
   type DiffLayout,
+  type RightPanelSide,
   type EnvironmentIdentificationMode,
   MAX_APPEARANCE_CONTRAST,
   MAX_CODE_FONT_SIZE,
@@ -215,6 +216,11 @@ const DIFF_LAYOUT_LABELS: Record<DiffLayout, string> = {
 const DIFF_ENGINE_LABELS: Record<DiffEngine, string> = {
   standard: "Standard",
   difftastic: "difftastic",
+};
+
+const RIGHT_PANEL_SIDE_LABELS: Record<RightPanelSide, string> = {
+  right: "Right",
+  left: "Left",
 };
 
 const QUIT_CONFIRMATION_MODE_LABELS: Record<QuitConfirmationMode, string> = {
@@ -615,6 +621,9 @@ export function useSettingsRestore(onRestored?: () => void) {
         : []),
       ...(settings.diffLayout !== DEFAULT_UNIFIED_SETTINGS.diffLayout ? ["Diff layout"] : []),
       ...(settings.diffEngine !== DEFAULT_UNIFIED_SETTINGS.diffEngine ? ["Diff engine"] : []),
+      ...(settings.rightPanelSide !== DEFAULT_UNIFIED_SETTINGS.rightPanelSide
+        ? ["Right panel position"]
+        : []),
       ...(settings.proactivePanelsEnabled !== DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled
         ? ["Proactive panels"]
         : []),
@@ -703,6 +712,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.diffIgnoreWhitespace,
       settings.diffLayout,
       settings.diffEngine,
+      settings.rightPanelSide,
       settings.proactivePanelsEnabled,
       settings.environmentIdentificationMode,
       settings.contextWindowMeterEnabled,
@@ -815,6 +825,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       diffLayout: DEFAULT_UNIFIED_SETTINGS.diffLayout,
       diffEngine: DEFAULT_UNIFIED_SETTINGS.diffEngine,
+      rightPanelSide: DEFAULT_UNIFIED_SETTINGS.rightPanelSide,
       proactivePanelsEnabled: DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled,
       showSkillsInSlashMenu: DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu,
       composerCollapseOnScroll: DEFAULT_UNIFIED_SETTINGS.composerCollapseOnScroll,
@@ -2757,6 +2768,42 @@ export function GeneralSettingsPanel() {
                 </SelectItem>
                 <SelectItem hideIndicator value="difftastic">
                   {DIFF_ENGINE_LABELS.difftastic}
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          {...searchableSetting("right-panel-position")}
+          description="Show the side panel to the right or left of the chat. The swap button in the title bar changes this too."
+          resetAction={
+            settings.rightPanelSide !== DEFAULT_UNIFIED_SETTINGS.rightPanelSide ? (
+              <SettingResetButton
+                label="right panel position"
+                onClick={() =>
+                  updateSettings({ rightPanelSide: DEFAULT_UNIFIED_SETTINGS.rightPanelSide })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.rightPanelSide}
+              onValueChange={(value) => {
+                if (value === "right" || value === "left") {
+                  updateSettings({ rightPanelSide: value });
+                }
+              }}
+            >
+              <SelectTrigger size="sm" className="w-full sm:w-40" aria-label="Right panel position">
+                <SelectValue>{RIGHT_PANEL_SIDE_LABELS[settings.rightPanelSide]}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="right">
+                  {RIGHT_PANEL_SIDE_LABELS.right}
+                </SelectItem>
+                <SelectItem hideIndicator value="left">
+                  {RIGHT_PANEL_SIDE_LABELS.left}
                 </SelectItem>
               </SelectPopup>
             </Select>
