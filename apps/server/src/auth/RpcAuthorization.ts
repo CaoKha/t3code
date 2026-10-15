@@ -10,6 +10,7 @@ import {
   requiredScopesForServerSettingsPatch,
   requiredScopesForProjectMutation,
   ProjectMutation,
+  ReviewStructuralDiffInput,
   AuthSettingsWriteScope,
   AuthProvidersManageScope,
   AuthEnvironmentMaintainScope,
@@ -178,6 +179,8 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.vcsListRefs]: AuthOrchestrationReadScope,
   [WS_METHODS.reviewGetDiffPreview]: AuthFilesystemReadScope,
   [WS_METHODS.reviewGetDiffFileContents]: AuthFilesystemReadScope,
+  // Resolved per target in requiredScopesForRpcCall.
+  [WS_METHODS.reviewGetStructuralDiff]: AuthOrchestrationReadScope,
   [WS_METHODS.terminalOpen]: AuthTerminalOperateScope,
   [WS_METHODS.terminalAttach]: AuthTerminalOperateScope,
   [WS_METHODS.terminalObserve]: AuthTerminalReadScope,
@@ -249,6 +252,8 @@ const requiredScopesForSettingsUpdate = (payload: unknown) => {
 
 const decodeProjectMutation = Schema.decodeUnknownSync(ProjectMutation);
 
+const decodeReviewStructuralDiffInput = Schema.decodeUnknownSync(ReviewStructuralDiffInput);
+
 const requiredScopesForRpcCall = (
   method: string,
   payload: unknown,
@@ -265,6 +270,11 @@ const requiredScopesForRpcCall = (
         ? AuthFilesystemReadScope
         : AuthOrchestrationReadScope,
     ];
+  }
+  if (method === WS_METHODS.reviewGetStructuralDiff) {
+    // Turn and pull request pairs are read like getTurnDiff and pull request file contents.
+    const { target } = decodeReviewStructuralDiffInput(payload);
+    return [target._tag === "git" ? AuthFilesystemReadScope : AuthOrchestrationReadScope];
   }
   if (method === WS_METHODS.serverUpdateSettings) return requiredScopesForSettingsUpdate(payload);
   if (method === WS_METHODS.projectsMutate) {
