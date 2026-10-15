@@ -61,6 +61,11 @@ export const DiffEngine = Schema.Literals(["standard", "difftastic"]);
 export type DiffEngine = typeof DiffEngine.Type;
 const DEFAULT_DIFF_ENGINE: DiffEngine = "standard";
 
+/** Which side of the chat the inline right panel (diff, browser, terminal, files) sits on. */
+export const RightPanelSide = Schema.Literals(["right", "left"]);
+export type RightPanelSide = typeof RightPanelSide.Type;
+const DEFAULT_RIGHT_PANEL_SIDE: RightPanelSide = "right";
+
 export const SidebarProjectSortOrder = Schema.Literals(["updated_at", "created_at", "manual"]);
 export type SidebarProjectSortOrder = typeof SidebarProjectSortOrder.Type;
 export const DEFAULT_SIDEBAR_PROJECT_SORT_ORDER: SidebarProjectSortOrder = "updated_at";
@@ -403,6 +408,9 @@ export const ClientSettingsSchema = Schema.Struct({
   diffIgnoreWhitespace: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   diffLayout: DiffLayout.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_DIFF_LAYOUT))),
   diffEngine: DiffEngine.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_DIFF_ENGINE))),
+  rightPanelSide: RightPanelSide.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_RIGHT_PANEL_SIDE)),
+  ),
   environmentIdentificationMode: EnvironmentIdentificationMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE)),
   ),
@@ -1737,6 +1745,7 @@ export const ClientSettingsPatch = Schema.Struct({
   diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),
   diffLayout: Schema.optionalKey(DiffLayout),
   diffEngine: Schema.optionalKey(DiffEngine),
+  rightPanelSide: Schema.optionalKey(RightPanelSide),
   environmentIdentificationMode: Schema.optionalKey(EnvironmentIdentificationMode),
   glassOpacity: Schema.optionalKey(GlassOpacity),
   onboardingCompletedAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
