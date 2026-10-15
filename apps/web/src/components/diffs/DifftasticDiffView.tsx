@@ -184,7 +184,11 @@ function DifftasticFileBody({
   if (!result) {
     return query.error ? (
       <DifftasticNotice>
-        <span className="text-error/80">{query.error}</span>
+        <span className="text-error/80">
+          {query.error.includes("review.getStructuralDiff")
+            ? "difftastic is not available here: this environment runs a T3 server without structural diff support. Use the standard diff, or update that server to a build that includes it."
+            : query.error}
+        </span>
       </DifftasticNotice>
     ) : (
       <DifftasticNotice>Running difftastic…</DifftasticNotice>
