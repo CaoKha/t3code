@@ -70,6 +70,12 @@ esac
 OUTPUT_DIR="$REPO/release/$VERSION"
 rm -rf "$OUTPUT_DIR"
 unset GITHUB_REPOSITORY T3CODE_DESKTOP_UPDATE_REPOSITORY
+# Like the release workflow, stamp the release version into every package so the
+# bundled server reports it too; the manifests are restored after the build.
+restore_manifests() { git checkout --quiet -- '*package.json' 1>&2 || true; }
+trap restore_manifests EXIT
+node scripts/update-release-package-versions.ts "$VERSION" 1>&2 ||
+  fail "Could not align package versions to $VERSION."
 run_pnpm exec node scripts/build-desktop-artifact.ts \
   --platform mac --arch "$ARCH" --target zip \
   --build-version "$VERSION" --output-dir "$OUTPUT_DIR" 2>&1 |
