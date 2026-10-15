@@ -41,7 +41,9 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --quiet --tags "https://github.com/${UPSTREAM_REPOSITORY}.git"
-          tag="$(git tag --list 'v*-nightly.*' --sort=-version:refname | head -n 1)"
+          # Read the whole list: `| head -n 1` would SIGPIPE git under pipefail.
+          tags="$(git tag --list 'v*-nightly.*' --sort=-version:refname)"
+          tag="${tags%%$'\n'*}"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           if git merge-base --is-ancestor "$tag" HEAD; then
             echo "Already contains ${tag}."
