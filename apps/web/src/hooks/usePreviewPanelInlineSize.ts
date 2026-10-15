@@ -23,6 +23,10 @@ const PREVIEW_PANEL_MAX_WIDTH_FRACTION = 0.7;
 const SIBLING_COLUMN_MIN_WIDTH = 360;
 const PREVIEW_PANEL_DEFAULT_WIDTH = 540;
 
+/** The inner edge a panel resizes from: the one facing the chat. */
+export const panelResizeEdge = (side: "left" | "right" | undefined): "left" | "right" =>
+  side === "left" ? "right" : "left";
+
 export function usePreviewPanelInlineSize(
   hostRef?: RefObject<HTMLElement | null>,
   options: {
@@ -31,6 +35,8 @@ export function usePreviewPanelInlineSize(
     readonly defaultWidth?: number | undefined;
     /** Measure this row instead of the panel's parent. */
     readonly container?: HTMLElement | null | undefined;
+    /** The edge the drag handle sits on: `left` for a right-anchored panel, `right` for a left-anchored one. */
+    readonly edge?: "left" | "right" | undefined;
   } = {},
 ): PreviewPanelInlineSize {
   const maxWidth = useViewportClampedMaxWidth(hostRef, options.enabled ?? true, options.container);
@@ -39,7 +45,7 @@ export function usePreviewPanelInlineSize(
     defaultWidth: options.defaultWidth ?? PREVIEW_PANEL_DEFAULT_WIDTH,
     minWidth: PREVIEW_PANEL_MIN_WIDTH,
     maxWidth,
-    edge: "left",
+    edge: options.edge ?? "left",
   });
 }
 
