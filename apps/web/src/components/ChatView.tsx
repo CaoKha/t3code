@@ -345,6 +345,7 @@ import {
   useClientSettings,
   useClientSettingsHydrated,
   useEnvironmentSettings,
+  useUpdateClientSettings,
 } from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { usePanelAnimationSettings, usePanelPresence } from "../panelAnimations";
@@ -466,6 +467,7 @@ import {
   PanelLayoutControls,
   type PanelLayoutControlsProps,
   RightPanelMaximizeControl,
+  RightPanelSideControl,
 } from "./chat/PanelLayoutControls";
 import { expandedImageKey, type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { ThreadDetailsPanel, type ThreadDetailsPanelProps } from "./chat/ThreadDetailsPanel";
@@ -2263,9 +2265,17 @@ export default function ChatView(props: ChatViewProps) {
   );
   // Electron hosts its own browser tabs; other clients need the environment to host them.
   const browserAvailable = isPreviewSupportedInRuntime() || activeEnvironmentServerBrowser;
+  const rightPanelSide = useClientSettings((settings) => settings.rightPanelSide);
+  const updateClientSettings = useUpdateClientSettings();
+  // The narrow-window sheet always slides in from the right.
+  const panelOnLeft = rightPanelSide === "left" && !shouldUsePlanSidebarSheet;
+  const toggleRightPanelSide = useCallback(() => {
+    updateClientSettings({ rightPanelSide: rightPanelSide === "left" ? "right" : "left" });
+  }, [rightPanelSide, updateClientSettings]);
   const previewPanelInlineSize = usePreviewPanelInlineSize(undefined, {
     container: workspaceLayoutElement,
     widthStorageKey: `t3code:preview-panel-width:${activeThreadKey}`,
+    edge: panelOnLeft ? "right" : "left",
   });
   const activeThreadShell = useThreadShell(isServerThread ? activeThreadRef : null);
   const timelineThreadError =
@@ -2400,7 +2410,9 @@ export default function ChatView(props: ChatViewProps) {
   );
   const canMaximizeRightPanel = rightPanelOpen && !shouldUsePlanSidebarSheet;
   const rightPanelMaximized = canMaximizeRightPanel && rightPanelState.maximized === true;
-  const inlineRightPanelOwnsTitleBar = rightPanelOpen && !shouldUsePlanSidebarSheet;
+  // On the left, the panel leaves the title bar's right side, and its controls, to the chat.
+  const inlineRightPanelOwnsTitleBar = rightPanelOpen && !shouldUsePlanSidebarSheet && !panelOnLeft;
+  const inlinePanelOnLeft = rightPanelOpen && panelOnLeft;
   const [threadPanelPresentation, setThreadPanelPresentation] =
     useState<ThreadPanelPresentation>("inline");
   const [threadPanelPopoverHandle] = useState(PopoverCreateHandle);
@@ -11386,7 +11398,7 @@ export default function ChatView(props: ChatViewProps) {
         <span
           aria-hidden={!rightPanelOpen}
           className={cn(
-            "flex shrink-0",
+            "flex shrink-0 gap-1",
             panelAnimationsActive &&
               "motion-safe:transition-opacity motion-safe:duration-(--panel-animation-duration) motion-safe:ease-out",
             // Closed, the control leaves the flex flow so the cluster is only as wide as the two
@@ -11398,6 +11410,10 @@ export default function ChatView(props: ChatViewProps) {
           )}
           inert={!rightPanelOpen}
         >
+          <RightPanelSideControl
+            side={panelOnLeft ? "left" : "right"}
+            onToggle={toggleRightPanelSide}
+          />
           <RightPanelMaximizeControl
             maximized={rightPanelMaximized}
             onToggle={toggleRightPanelMaximized}
@@ -11416,7 +11432,10 @@ export default function ChatView(props: ChatViewProps) {
   const content = (
     <div
       ref={setWorkspaceLayoutElement}
-      className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background"
+      className={cn(
+        "relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background",
+        panelOnLeft && "flex-row-reverse",
+      )}
     >
       <Dialog
         open={
@@ -11463,13 +11482,17 @@ export default function ChatView(props: ChatViewProps) {
                     "wco:pr-(--workspace-native-controls-inset)",
                 )
               : "flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center pl-(--workspace-gutter-start) pr-(--workspace-gutter-end)",
-            COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+            // A panel on the left takes the traffic-light inset instead.
+            !inlinePanelOnLeft && COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
           )}
         >
           {isElectron && rightPanelControlsAtRoot ? (
             <span
               aria-hidden
-              className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] h-[var(--workspace-topbar-height)] w-28 [-webkit-app-region:no-drag]"
+              className={cn(
+                "pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] h-[var(--workspace-topbar-height)] [-webkit-app-region:no-drag]",
+                inlinePanelOnLeft ? "w-44" : "w-28",
+              )}
             />
           ) : null}
           {!rightPanelControlsAtRoot && !rightPanelControlsInPanel ? panelLayoutControls : null}
@@ -11483,6 +11506,7 @@ export default function ChatView(props: ChatViewProps) {
             parentThreadLink={parentThreadLink}
             onOpenThread={onOpenRelatedThread}
             rightPanelOpen={inlineRightPanelOwnsTitleBar}
+            wideTitleBarControls={inlinePanelOnLeft}
             onNewThreadInProject={handleNewThreadInActiveProject}
             {...(activeDraftLogicalProjectKey
               ? { onOpenProjectSettings: handleOpenDraftProjectSettings }
@@ -12101,6 +12125,7 @@ export default function ChatView(props: ChatViewProps) {
       {rightPanelPresent && !shouldUsePlanSidebarSheet && activeThreadRef ? (
         <RightPanelTabs
           mode="inline"
+          side={panelOnLeft ? "left" : "right"}
           open={rightPanelOpen}
           keybindings={keybindings}
           getShortcutContext={getShortcutContext}

@@ -31,6 +31,8 @@ export function usePreviewPanelInlineSize(
     readonly defaultWidth?: number | undefined;
     /** Measure this row instead of the panel's parent. */
     readonly container?: HTMLElement | null | undefined;
+    /** The edge the drag handle sits on: `left` for a right-anchored panel, `right` for a left-anchored one. */
+    readonly edge?: "left" | "right" | undefined;
   } = {},
 ): PreviewPanelInlineSize {
   const maxWidth = useViewportClampedMaxWidth(hostRef, options.enabled ?? true, options.container);
@@ -39,7 +41,7 @@ export function usePreviewPanelInlineSize(
     defaultWidth: options.defaultWidth ?? PREVIEW_PANEL_DEFAULT_WIDTH,
     minWidth: PREVIEW_PANEL_MIN_WIDTH,
     maxWidth,
-    edge: "left",
+    edge: options.edge ?? "left",
   });
 }
 

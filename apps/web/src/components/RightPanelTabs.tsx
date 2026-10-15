@@ -106,6 +106,8 @@ interface RightPanelTabsProps {
   /** Forwarded to PreviewPanelShell as the initial width before a user resize. */
   defaultWidth?: number;
   inlineSize?: PreviewPanelInlineSize;
+  /** Which side of the chat the inline panel sits on. */
+  side?: "left" | "right";
   layoutControls?: ReactNode;
   surfaces: readonly RightPanelSurface[];
   /** Fallback environment for surfaces that do not carry their own. */
@@ -1160,6 +1162,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
   return (
     <PreviewPanelShell
       mode={props.mode}
+      {...(props.side !== undefined ? { side: props.side } : {})}
       {...(props.maximized !== undefined ? { maximized: props.maximized } : {})}
       {...(props.open !== undefined ? { open: props.open } : {})}
       {...(props.widthStorageKey !== undefined ? { widthStorageKey: props.widthStorageKey } : {})}
@@ -1172,10 +1175,17 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
           // The sheet overlays from the viewport top, so its tab bar keeps
           // the titlebar's height: a compact row re-centers the layout
           // controls a few pixels higher and the cluster jumps on open.
-          props.mode === "inline" && !props.layoutControls ? "pr-28" : "pr-3",
+          // On the left, the panel no longer sits under the window's title bar controls.
+          props.mode === "inline" && !props.layoutControls && props.side !== "left"
+            ? "pr-28"
+            : "pr-3",
           ownsDesktopTitleBar && "drag-region",
-          ownsDesktopTitleBar && "wco:pr-(--workspace-native-controls-inset)",
-          props.mode === "inline" && props.maximized && COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+          ownsDesktopTitleBar &&
+            props.side !== "left" &&
+            "wco:pr-(--workspace-native-controls-inset)",
+          props.mode === "inline" &&
+            (props.maximized || props.side === "left") &&
+            COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
         )}
         data-right-panel-tabbar
       >

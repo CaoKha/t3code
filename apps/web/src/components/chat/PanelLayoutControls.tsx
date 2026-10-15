@@ -1,4 +1,4 @@
-import { PanelBottomIcon, PanelRightIcon, SquareMenuIcon } from "lucide-react";
+import { ArrowLeftRightIcon, PanelBottomIcon, PanelRightIcon, SquareMenuIcon } from "lucide-react";
 import { Maximize2, Minimize2 } from "lucide";
 import { MorphIcon } from "~/components/MorphIcon";
 import { memo, type ReactElement } from "react";
@@ -128,6 +128,35 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
         </Tooltip>
       ) : null}
     </div>
+  );
+});
+
+export const RightPanelSideControl = memo(function RightPanelSideControl({
+  side,
+  onToggle,
+}: {
+  side: "left" | "right";
+  onToggle: () => void;
+}) {
+  const label = side === "left" ? "Move panel to the right" : "Move panel to the left";
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Toggle
+            className="shrink-0 [-webkit-app-region:no-drag]"
+            pressed={side === "left"}
+            onPressedChange={onToggle}
+            aria-label={label}
+            variant="ghost"
+            size="sm"
+          >
+            <ArrowLeftRightIcon className="size-4" />
+          </Toggle>
+        }
+      />
+      <TooltipPopup side="bottom">{`Swap chat and panel · ${label}`}</TooltipPopup>
+    </Tooltip>
   );
 });
 
