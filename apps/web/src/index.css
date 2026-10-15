@@ -1714,6 +1714,69 @@ code {
   font-size: var(--font-size-code, inherit);
 }
 
+/* The difftastic diff view renders plain DOM, so it repeats the code surface and
+   the row tints DIFF_SURFACE_THEME_UNSAFE_CSS gives the standard (@pierre/diffs) view. */
+.difftastic-surface {
+  /* StyledDiffCodeView draws the standard diff on the page background; match it. */
+  --code-background: var(--background);
+  background-color: var(--code-background);
+  color: var(--code-foreground);
+}
+
+.difftastic-code {
+  font-size: var(--font-size-code, inherit);
+}
+
+.difftastic-surface [data-dt-line="addition"] {
+  background-color: light-dark(
+    color-mix(in srgb, var(--code-background) 50%, var(--diff-addition)),
+    color-mix(in srgb, var(--code-background) 70%, var(--diff-addition))
+  );
+}
+
+.difftastic-surface [data-dt-line="deletion"] {
+  background-color: light-dark(
+    color-mix(in srgb, var(--code-background) 50%, var(--diff-deletion)),
+    color-mix(in srgb, var(--code-background) 70%, var(--diff-deletion))
+  );
+}
+
+.difftastic-surface [data-dt-line="addition"] [data-dt-gutter] {
+  background-color: light-dark(
+    color-mix(in srgb, var(--code-background) 35%, var(--diff-addition)),
+    color-mix(in srgb, var(--code-background) 60%, var(--diff-addition))
+  );
+}
+
+.difftastic-surface [data-dt-line="deletion"] [data-dt-gutter] {
+  background-color: light-dark(
+    color-mix(in srgb, var(--code-background) 35%, var(--diff-deletion)),
+    color-mix(in srgb, var(--code-background) 60%, var(--diff-deletion))
+  );
+}
+
+/* Changed tokens sit on the tinted row, so the emphasis stacks on top of it. */
+/* Changed tokens are a light layer over their row's tint rather than a second opaque fill. */
+.difftastic-surface [data-dt-novel="addition"] {
+  background-color: color-mix(in srgb, var(--diff-addition) 18%, transparent);
+}
+
+.difftastic-surface [data-dt-novel="deletion"] {
+  background-color: color-mix(in srgb, var(--diff-deletion) 18%, transparent);
+}
+
+.difftastic-surface [data-dt-gap] {
+  background-color: color-mix(in srgb, var(--code-background) 95%, var(--code-foreground));
+}
+
+.difftastic-surface [data-dt-gap]:hover {
+  background-color: color-mix(in srgb, var(--code-background) 90%, var(--code-foreground));
+}
+
+.difftastic-surface [data-dt-empty] {
+  background-color: color-mix(in srgb, var(--code-background) 90%, var(--code-foreground));
+}
+
 /* @pierre/diffs surfaces (diffs, file previews, annotatable code, search
    lines) render inside shadow roots but consult these hooks with their own
    literal stacks as fallback. Custom properties inherit across the shadow

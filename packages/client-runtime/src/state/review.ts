@@ -20,6 +20,7 @@ export function createReviewEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {
   const patchReads = Semaphore.makeUnsafe(4);
+  const structuralDiffs = Semaphore.makeUnsafe(4);
   const diffFileScheduler = createAtomCommandScheduler();
   return {
     diffPreview: createEnvironmentRpcQueryAtomFamily(runtime, {
@@ -51,6 +52,14 @@ export function createReviewEnvironmentAtoms<R, E>(
                 );
           }),
         ),
+    }),
+    structuralDiff: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:review:structural-diff",
+      tag: WS_METHODS.reviewGetStructuralDiff,
+      staleTimeMs: 5 * 60_000,
+      // Each request runs difftastic on the server; cap how many a long diff fires at once.
+      execute: (input) =>
+        request(WS_METHODS.reviewGetStructuralDiff, input).pipe(structuralDiffs.withPermit),
     }),
     diffFileContents: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:review:diff-file-contents",
