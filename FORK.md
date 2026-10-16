@@ -5,7 +5,7 @@ This fork is upstream [pingdotgg/t3code](https://github.com/pingdotgg/t3code) pl
 - **difftastic diffs**: the `{}` toggle in the Diff panel shows structural diffs from `difft`
   (needs `difft` on the machine running the T3 server).
 - **Neovim as an editor**: with `nvim` on the server's PATH, "Open in Neovim" (the default
-  until another editor is picked) opens a new T3 terminal tab running `nvim`, so LazyVim works
+  until another editor is picked) opens a new side-panel terminal running `nvim`, so LazyVim works
   locally and over remote connections.
 - **Swap chat and panel**: the ⇄ button next to Maximize moves the right panel to the left.
 - **Updates from this fork**: builds of this fork update from this fork's releases.

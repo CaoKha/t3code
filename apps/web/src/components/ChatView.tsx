@@ -5108,30 +5108,6 @@ export default function ChatView(props: ChatViewProps) {
     );
   };
   const runShellCommandStable = useStableCallback(runShellCommand);
-  useEffect(
-    () =>
-      registerTerminalEditorRunner(({ environmentId: targetEnvironmentId, command }) => {
-        if (
-          !activeThreadId ||
-          targetEnvironmentId !== environmentId ||
-          !readEnvironmentScope(environmentId, AuthTerminalOperateScope)
-        ) {
-          return false;
-        }
-        void runProjectScriptRef.current(
-          {
-            id: "terminal-editor",
-            name: "Terminal editor",
-            command,
-            icon: "play",
-            runOnWorktreeCreate: false,
-          },
-          { preferNewTerminal: true, rememberAsLastInvoked: false },
-        );
-        return true;
-      }),
-    [activeThreadId, environmentId],
-  );
 
   const supportsProjectSettingsOverrides =
     environmentById.get(environmentId)?.serverConfig?.environment.capabilities
@@ -5868,13 +5844,14 @@ export default function ChatView(props: ChatViewProps) {
     }
   };
   const togglePreviewPanelStable = useStableCallback(togglePreviewPanel);
-  const addTerminalSurface = () => {
+  /** Opens a new right-panel terminal and, when given, types `command` into it. */
+  const launchTerminalSurface = async (command: string | null) => {
     if (!hasTerminalWriteAccess() || !activeThreadRef || !activeThreadId || !activeProject) return;
     const cwd = gitCwd ?? activeProject.workspaceRoot;
     const terminalId = allocateTerminalId();
     useRightPanelStore.getState().openTerminal(activeThreadRef, terminalId);
     setTerminalFocusRequestId((value) => value + 1);
-    void openTerminal({
+    const openResult = await openTerminal({
       environmentId: activeThreadRef.environmentId,
       input: {
         threadId: activeThreadId,
@@ -5887,8 +5864,39 @@ export default function ChatView(props: ChatViewProps) {
         }),
       },
     });
+    if (command === null || openResult._tag === "Failure" || !hasTerminalWriteAccess()) return;
+    const writeResult = await writeTerminal({
+      environmentId: activeThreadRef.environmentId,
+      input: { threadId: activeThreadId, terminalId, data: `${command}\r` },
+    });
+    if (writeResult._tag === "Failure" && !isAtomCommandInterrupted(writeResult)) {
+      const error = squashAtomCommandFailure(writeResult);
+      setThreadError(
+        activeThreadId,
+        error instanceof Error ? error.message : `Failed to run "${command}".`,
+      );
+    }
+  };
+  const launchTerminalSurfaceStable = useStableCallback(launchTerminalSurface);
+  const addTerminalSurface = () => {
+    void launchTerminalSurface(null);
   };
   const addTerminalSurfaceStable = useStableCallback(addTerminalSurface);
+  useEffect(
+    () =>
+      registerTerminalEditorRunner(({ environmentId: targetEnvironmentId, command }) => {
+        if (
+          !activeThreadId ||
+          targetEnvironmentId !== environmentId ||
+          !readEnvironmentScope(environmentId, AuthTerminalOperateScope)
+        ) {
+          return false;
+        }
+        void launchTerminalSurfaceStable(command);
+        return true;
+      }),
+    [activeThreadId, environmentId, launchTerminalSurfaceStable],
+  );
   const splitPanelTerminal = (direction: "horizontal" | "vertical" = "horizontal") => {
     if (
       !hasTerminalWriteAccess() ||

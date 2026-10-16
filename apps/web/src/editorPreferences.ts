@@ -71,7 +71,7 @@ function resolveAndPersistPreferredEditor(availableEditors: readonly EditorId[])
 
 /**
  * The open-in-editor command, except terminal editors (Neovim) open in a new
- * T3 terminal tab rather than being launched by the server.
+ * side-panel terminal rather than being launched by the server.
  */
 export function useOpenInEditor(options?: string | AtomCommandOptions) {
   const openInEditor = useAtomCommand(shellEnvironment.openInEditor, options);

@@ -3,7 +3,7 @@ import { splitFilePathPosition } from "@t3tools/shared/fileLinks";
 import * as Schema from "effect/Schema";
 
 /**
- * Terminal editors (Neovim) open in a new T3 terminal tab of the visible thread.
+ * Terminal editors (Neovim) open in a new terminal in the visible thread's side panel.
  * ChatView registers the runner that owns that thread's terminals; every
  * open-in-editor path routes terminal editors here instead of the server.
  */
