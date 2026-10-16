@@ -1717,8 +1717,6 @@ code {
 /* The difftastic diff view renders plain DOM, so it repeats the code surface and
    the row tints DIFF_SURFACE_THEME_UNSAFE_CSS gives the standard (@pierre/diffs) view. */
 .difftastic-surface {
-  /* StyledDiffCodeView draws the standard diff on the page background; match it. */
-  --code-background: var(--background);
   background-color: var(--code-background);
   color: var(--code-foreground);
 }
