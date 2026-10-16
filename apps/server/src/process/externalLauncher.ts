@@ -557,6 +557,11 @@ const resolveEditorLaunch = Effect.fn("resolveEditorLaunch")(function* (
     return yield* new ExternalLauncherUnknownEditorError({ editor: input.editor });
   }
 
+  // A terminal editor needs a tty; clients run it in a T3 terminal tab instead.
+  if ("runsInTerminal" in editorDef && editorDef.runsInTerminal) {
+    return yield* new ExternalLauncherUnsupportedEditorError({ editor: input.editor });
+  }
+
   if (editorDef.commands) {
     const { command, baseArgs } = Option.getOrElse(
       yield* resolveEditorCommand(editorDef, env),

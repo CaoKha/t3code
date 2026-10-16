@@ -1,10 +1,8 @@
 import type { EditorId, EnvironmentId, ResolvedKeybindingsConfig } from "@t3tools/contracts";
 import { useEffect } from "react";
 
-import { usePreferredEditor } from "../../editorPreferences";
+import { useOpenInEditor, usePreferredEditor } from "../../editorPreferences";
 import { isOpenFavoriteEditorShortcut } from "../../keybindings";
-import { shellEnvironment } from "../../state/shell";
-import { useAtomCommand } from "../../state/use-atom-command";
 
 export function useOpenFavoriteEditorShortcut({
   enabled,
@@ -19,7 +17,7 @@ export function useOpenFavoriteEditorShortcut({
   availableEditors: ReadonlyArray<EditorId>;
   openInCwd: string | null;
 }) {
-  const openInEditorMutation = useAtomCommand(shellEnvironment.openInEditor, "open in editor");
+  const openInEditorMutation = useOpenInEditor("open in editor");
   const [preferredEditor] = usePreferredEditor(availableEditors);
 
   useEffect(() => {

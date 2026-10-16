@@ -3,12 +3,13 @@ import {
   AuthOrchestrationOperateScope,
   buildRemoteOpenUrl,
   EditorId,
+  editorRunsInTerminal,
   type EnvironmentId,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { isOpenFavoriteEditorShortcut, shortcutLabelForCommand } from "../../keybindings";
-import { usePreferredEditor } from "../../editorPreferences";
+import { useOpenInEditor, usePreferredEditor } from "../../editorPreferences";
 import { editorLabelForPlatform } from "../../editorLabels";
 import {
   openRemoteEditorUrl,
@@ -38,6 +39,7 @@ import {
   FinderIcon,
   Icon,
   KiroIcon,
+  NeovimIcon,
   TraeIcon,
   VisualStudioCode,
   VisualStudioCodeInsiders,
@@ -59,8 +61,6 @@ import {
   WebStormIcon,
 } from "../JetBrainsIcons";
 import { cn, isMacPlatform, isWindowsPlatform } from "~/lib/utils";
-import { shellEnvironment } from "~/state/shell";
-import { useAtomCommand } from "~/state/use-atom-command";
 import {
   THREAD_DETAILS_PANEL_CHEVRON_CLASS,
   THREAD_DETAILS_PANEL_ICON_CLASS,
@@ -83,6 +83,11 @@ export const resolveOpenInOptions = (
   availableEditors: ReadonlyArray<EditorId>,
 ) => {
   const baseOptions: ReadonlyArray<Omit<OpenInOption, "label">> = [
+    {
+      Icon: NeovimIcon,
+      value: "neovim",
+      kind: "brand",
+    },
     {
       Icon: CursorIcon,
       value: "cursor",
@@ -225,7 +230,7 @@ export const OpenInPicker = memo(function OpenInPicker({
   const isPanel = displayMode === "panel";
   const ActionGroup = isPanel ? "div" : Group;
   const panelAnchorRef = useRef<HTMLDivElement | null>(null);
-  const openInEditorMutation = useAtomCommand(shellEnvironment.openInEditor, "open in editor");
+  const openInEditorMutation = useOpenInEditor("open in editor");
   const remote = useRemoteOpenState(environmentId);
   const canOperateHost = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
   const isHostEditorDenied = remote.mode === "local-exec" && !canOperateHost;
@@ -235,8 +240,15 @@ export const OpenInPicker = memo(function OpenInPicker({
   const [remoteHintSeen, markRemoteHintSeen] = useRemoteOpenHint();
   const environmentLabel = useEnvironment(environmentId)?.label ?? "this machine";
   // Remote mode ignores the server's PATH probe: what matters is what runs on
-  // the viewing machine, which only the desktop app can probe.
-  const effectiveEditors = remote.mode === "local-exec" ? availableEditors : remoteCapableEditors;
+  // the viewing machine, which only the desktop app can probe. Terminal editors
+  // are the exception: they run in the server's own terminal.
+  const effectiveEditors = useMemo(
+    () =>
+      remote.mode === "local-exec"
+        ? availableEditors
+        : [...availableEditors.filter(editorRunsInTerminal), ...remoteCapableEditors],
+    [availableEditors, remote.mode, remoteCapableEditors],
+  );
   const [preferredEditor, setPreferredEditor] = usePreferredEditor(effectiveEditors);
   const options = useMemo(
     () => resolveOpenInOptions(navigator.platform, effectiveEditors),
@@ -249,6 +261,10 @@ export const OpenInPicker = memo(function OpenInPicker({
       if (!openInCwd) return;
       const editor = editorId ?? preferredEditor;
       if (!editor) return;
+      if (editorRunsInTerminal(editor)) {
+        setPreferredEditor(editor);
+        return openInEditorMutation({ environmentId, input: { cwd: openInCwd, editor } });
+      }
       if (remote.mode === "remote-unavailable") return;
       if (remote.mode === "remote-links") {
         const url = buildRemoteOpenUrl({

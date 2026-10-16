@@ -611,6 +611,14 @@ export const VSCodium: Icon = (props) => {
   );
 };
 
+export const NeovimIcon: Icon = (props) => (
+  <svg viewBox="0 0 24 24" fill="none" {...props}>
+    <path fill="#1A8FD6" d="M2.5 6.2 7 2v20l-4.5-4.2V6.2Z" />
+    <path fill="#5FB548" d="M21.5 6.2 17 2v20l4.5-4.2V6.2Z" />
+    <path fill="#43B4A0" d="M7 2 17 17.5V22L7 6.5V2Z" />
+  </svg>
+);
+
 export const Zed: Icon = (props) => {
   const id = useId();
   const clipPathId = `${id}-zed-logo-a`;

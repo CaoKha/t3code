@@ -1609,3 +1609,21 @@ it.effect("rejects unknown editors through the service API", () =>
     assert.equal(error.message, "Unknown editor: missing-editor");
   }).pipe(Effect.provide(layerTest({ platform: "linux", env: { PATH: "" } }))),
 );
+
+it.effect("refuses to launch terminal editors detached from a tty", () =>
+  Effect.gen(function* () {
+    const launcher = yield* ExternalLauncher.ExternalLauncher;
+    const error = yield* launcher
+      .launchEditor({ editor: "neovim", cwd: "/tmp/workspace" })
+      .pipe(Effect.flip);
+    assert.instanceOf(error, ExternalLauncher.ExternalLauncherUnsupportedEditorError);
+  }).pipe(
+    Effect.provide(
+      layerTest({
+        platform: "linux",
+        env: { PATH: "" },
+        onSpawn: () => assert.fail("terminal editors must not be spawned"),
+      }),
+    ),
+  ),
+);

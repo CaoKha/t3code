@@ -23,9 +23,22 @@ type EditorDefinition = {
    * which uses the code to choose the IDE backend.
    */
   readonly jetbrainsProductCode?: string;
+  /**
+   * Terminal editors have no window of their own. Clients run `commands[0]` in
+   * a T3 terminal tab instead of asking the server to launch it.
+   */
+  readonly runsInTerminal?: boolean;
 };
 
 export const EDITORS = [
+  // First so it is the default when no editor has been picked yet (this fork's choice).
+  {
+    id: "neovim",
+    label: "Neovim",
+    commands: ["nvim"],
+    launchStyle: "direct-path",
+    runsInTerminal: true,
+  },
   {
     id: "cursor",
     label: "Cursor",
@@ -175,6 +188,9 @@ export const LaunchEditorInput = Schema.Struct({
   reveal: Schema.optional(Schema.Boolean),
 });
 export type LaunchEditorInput = typeof LaunchEditorInput.Type;
+
+export const editorRunsInTerminal = (id: EditorId): boolean =>
+  EDITORS.some((editor) => editor.id === id && "runsInTerminal" in editor && editor.runsInTerminal);
 
 const remoteSchemeOf = (editor: EditorDefinition): string | undefined =>
   editor.remoteScheme ?? (editor.jetbrainsProductCode === undefined ? undefined : "jetbrains");

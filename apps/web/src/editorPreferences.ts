@@ -2,13 +2,16 @@ import {
   AuthOrchestrationOperateScope,
   EDITORS,
   EditorId,
+  editorRunsInTerminal,
   EnvironmentAuthorizationError,
   EnvironmentId,
 } from "@t3tools/contracts";
 import {
   mapAtomCommandResult,
   type AtomCommandFailure,
+  type AtomCommandOptions,
   type AtomCommandResult,
+  type AtomCommandSuccess,
 } from "@t3tools/client-runtime/state/runtime";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
@@ -18,6 +21,7 @@ import { useCallback, useMemo } from "react";
 import { shellEnvironment } from "./state/shell";
 import { useAtomCommand } from "./state/use-atom-command";
 import { readEnvironmentScope } from "./state/session";
+import { runTerminalEditor, TerminalEditorUnavailableError } from "./terminalEditor";
 
 const LAST_EDITOR_KEY = "t3code:last-editor";
 
@@ -65,13 +69,41 @@ function resolveAndPersistPreferredEditor(availableEditors: readonly EditorId[])
   return editor ?? null;
 }
 
+/**
+ * The open-in-editor command, except terminal editors (Neovim) open in a new
+ * T3 terminal tab rather than being launched by the server.
+ */
+export function useOpenInEditor(options?: string | AtomCommandOptions) {
+  const openInEditor = useAtomCommand(shellEnvironment.openInEditor, options);
+  type OpenInEditorResult = Awaited<ReturnType<typeof openInEditor>>;
+  return useCallback(
+    async (
+      value: Parameters<typeof openInEditor>[0],
+    ): Promise<
+      AtomCommandResult<
+        AtomCommandSuccess<OpenInEditorResult>,
+        AtomCommandFailure<OpenInEditorResult> | TerminalEditorUnavailableError
+      >
+    > => {
+      const { environmentId, input } = value;
+      if (!editorRunsInTerminal(input.editor) || input.reveal === true) {
+        return openInEditor(value);
+      }
+      return runTerminalEditor(environmentId, input.editor, input.cwd)
+        ? AsyncResult.success(undefined)
+        : AsyncResult.failure(
+            Cause.fail(new TerminalEditorUnavailableError({ targetPath: input.cwd })),
+          );
+    },
+    [openInEditor],
+  );
+}
+
 export function useOpenInPreferredEditor(
   environmentId: EnvironmentId | null,
   availableEditors: readonly EditorId[],
 ) {
-  const openInEditor = useAtomCommand(shellEnvironment.openInEditor, {
-    reportFailure: false,
-  });
+  const openInEditor = useOpenInEditor({ reportFailure: false });
   type OpenInEditorError = AtomCommandFailure<Awaited<ReturnType<typeof openInEditor>>>;
 
   return useCallback(

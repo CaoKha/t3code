@@ -621,6 +621,7 @@ import { useAssetUrls } from "../assets/assetUrls";
 import { ATTACHMENT_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerContextReferences";
 import { recallableComposerPrompt } from "./chat/composerPromptHistory";
 import { observeResize } from "~/lib/observeResize";
+import { registerTerminalEditorRunner } from "~/terminalEditor";
 
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_MODELS: ServerProvider["models"] = [];
@@ -5107,6 +5108,30 @@ export default function ChatView(props: ChatViewProps) {
     );
   };
   const runShellCommandStable = useStableCallback(runShellCommand);
+  useEffect(
+    () =>
+      registerTerminalEditorRunner(({ environmentId: targetEnvironmentId, command }) => {
+        if (
+          !activeThreadId ||
+          targetEnvironmentId !== environmentId ||
+          !readEnvironmentScope(environmentId, AuthTerminalOperateScope)
+        ) {
+          return false;
+        }
+        void runProjectScriptRef.current(
+          {
+            id: "terminal-editor",
+            name: "Terminal editor",
+            command,
+            icon: "play",
+            runOnWorktreeCreate: false,
+          },
+          { preferNewTerminal: true, rememberAsLastInvoked: false },
+        );
+        return true;
+      }),
+    [activeThreadId, environmentId],
+  );
 
   const supportsProjectSettingsOverrides =
     environmentById.get(environmentId)?.serverConfig?.environment.capabilities
