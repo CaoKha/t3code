@@ -442,6 +442,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["side panel left right swap move chat layout browser terminal diff"],
   },
   {
+    id: "file-tree-position",
+    title: "File tree position",
+    to: "/settings/general",
+    searchTerms: ["file explorer tree left right swap move diff code files"],
+  },
+  {
     id: "proactive-panels",
     title: "Proactive panels",
     to: "/settings/general",

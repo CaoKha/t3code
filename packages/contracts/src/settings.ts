@@ -66,6 +66,11 @@ export const RightPanelSide = Schema.Literals(["right", "left"]);
 export type RightPanelSide = typeof RightPanelSide.Type;
 const DEFAULT_RIGHT_PANEL_SIDE: RightPanelSide = "right";
 
+/** Which side of the code or diff the file tree sits on in file previews, diffs, and PRs. */
+export const FileTreeSide = Schema.Literals(["left", "right"]);
+export type FileTreeSide = typeof FileTreeSide.Type;
+const DEFAULT_FILE_TREE_SIDE: FileTreeSide = "left";
+
 export const SidebarProjectSortOrder = Schema.Literals(["updated_at", "created_at", "manual"]);
 export type SidebarProjectSortOrder = typeof SidebarProjectSortOrder.Type;
 export const DEFAULT_SIDEBAR_PROJECT_SORT_ORDER: SidebarProjectSortOrder = "updated_at";
@@ -410,6 +415,9 @@ export const ClientSettingsSchema = Schema.Struct({
   diffEngine: DiffEngine.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_DIFF_ENGINE))),
   rightPanelSide: RightPanelSide.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_RIGHT_PANEL_SIDE)),
+  ),
+  fileTreeSide: FileTreeSide.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_FILE_TREE_SIDE)),
   ),
   environmentIdentificationMode: EnvironmentIdentificationMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE)),
@@ -1769,6 +1777,7 @@ export const ClientSettingsPatch = Schema.Struct({
   diffLayout: Schema.optionalKey(DiffLayout),
   diffEngine: Schema.optionalKey(DiffEngine),
   rightPanelSide: Schema.optionalKey(RightPanelSide),
+  fileTreeSide: Schema.optionalKey(FileTreeSide),
   environmentIdentificationMode: Schema.optionalKey(EnvironmentIdentificationMode),
   glassOpacity: Schema.optionalKey(GlassOpacity),
   onboardingCompletedAt: Schema.optionalKey(Schema.NullOr(Schema.String)),

@@ -56,6 +56,7 @@ import { DiffPanelLoadingState, DiffPanelShell, type DiffPanelMode } from "./Dif
 import { DiffStatLabel } from "./chat/DiffStatLabel";
 import { AnnotatableCodeView, type AnnotatableCodeViewHandle } from "./diffs/AnnotatableCodeView";
 import { DiffFileTree } from "./diffs/DiffFileTree";
+import { FileTreeSideControl } from "./diffs/FileTreeSideControl";
 import { diffFileTreeEntries } from "./diffs/diffFileTree.logic";
 import { Button } from "./ui/button";
 import { MorphIcon } from "~/components/MorphIcon";
@@ -1137,6 +1138,7 @@ export default function DiffPanel({
             </TooltipPopup>
           </Tooltip>
         )}
+        {fileTreeOpen && diffFileKeys.length > 0 ? <FileTreeSideControl /> : null}
       </div>
     </>
   );
@@ -1333,7 +1335,12 @@ export default function DiffPanel({
                   )}
                 </div>
                 {fileTreeOpen ? (
-                  <aside className="flex w-[min(16rem,40%)] min-w-40 shrink-0 border-l border-border/60">
+                  <aside
+                    className={cn(
+                      "flex w-[min(16rem,40%)] min-w-40 shrink-0 border-border/60",
+                      settings.fileTreeSide === "left" ? "order-first border-r" : "border-l",
+                    )}
+                  >
                     <DiffFileTree
                       ariaLabel={`${reviewSectionTitle} files`}
                       entries={fileTreeEntries}

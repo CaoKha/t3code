@@ -69,6 +69,7 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { DiffPanelLoadingState } from "../DiffPanelShell";
 import { DiffCommentAnnotation } from "../diffs/DiffCommentAnnotation";
 import { DiffFileTree } from "../diffs/DiffFileTree";
+import { FileTreeSideControl } from "../diffs/FileTreeSideControl";
 import { useCodeViewFileReveal } from "../diffs/useCodeViewFileReveal";
 import { diffFileTreeEntries } from "../diffs/diffFileTree.logic";
 import { StyledDiffCodeView } from "../diffs/StyledDiffCodeView";
@@ -1459,6 +1460,7 @@ function PullRequestCodeTab({
             </TooltipPopup>
           </Tooltip>
         ) : null}
+        {fileTreeOpen && fileKeys.length > 0 ? <FileTreeSideControl /> : null}
       </div>
     </div>
   );
@@ -1691,7 +1693,12 @@ function PullRequestCodeTab({
           )}
         </div>
         {fileTreeOpen ? (
-          <aside className="flex w-[min(20rem,40%)] min-w-48 shrink-0 border-l border-border/60">
+          <aside
+            className={cn(
+              "flex w-[min(20rem,40%)] min-w-48 shrink-0 border-border/60",
+              settings.fileTreeSide === "left" ? "order-first border-r" : "border-l",
+            )}
+          >
             <DiffFileTree
               ariaLabel={`Pull request #${detail.number} files`}
               entries={fileTreeEntries}

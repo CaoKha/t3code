@@ -37,7 +37,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { mediaFileReference } from "@t3tools/client-runtime/media-reference";
-import { FolderTree, Globe2, WrapTextIcon } from "lucide-react";
+import { ArrowLeftRightIcon, FolderTree, Globe2, WrapTextIcon } from "lucide-react";
 import { Code2, Eye, Table2 } from "lucide";
 import * as Schema from "effect/Schema";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -1055,6 +1055,7 @@ export default function FilePreviewPanel({
   const draft = typeof composerDraftTarget === "string";
   const { resolvedTheme } = useTheme();
   const wordWrap = useClientSettings((settings) => settings.wordWrap);
+  const fileTreeSide = useClientSettings((settings) => settings.fileTreeSide);
   const canOperatePreview = useEnvironmentScope(environmentId, AuthPreviewOperateScope);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const remoteOpenState = useRemoteOpenState(environmentId);
@@ -1361,6 +1362,20 @@ export default function FilePreviewPanel({
               <FolderTree className="size-3.5" />
             </FileSurfaceAction>
           ) : null}
+          {showExplorer && previewPath !== null ? (
+            <FileSurfaceAction
+              label={
+                fileTreeSide === "left"
+                  ? "Move file explorer to the right"
+                  : "Move file explorer to the left"
+              }
+              onPress={() =>
+                updateClientSettings({ fileTreeSide: fileTreeSide === "left" ? "right" : "left" })
+              }
+            >
+              <ArrowLeftRightIcon className="size-3.5" />
+            </FileSurfaceAction>
+          ) : null}
         </div>
       ) : null}
       {relativePath && !attachment && !isHostFile && !canWriteFiles && !fileAccess.isPending ? (
@@ -1520,7 +1535,10 @@ export default function FilePreviewPanel({
             className={cn(
               "flex min-h-0 shrink-0 bg-background",
               previewPath
-                ? "w-[min(22rem,46%)] min-w-64 border-l border-border/60"
+                ? cn(
+                    "w-[min(22rem,46%)] min-w-64 border-border/60",
+                    fileTreeSide === "left" ? "order-first border-r" : "border-l",
+                  )
                 : "min-w-0 flex-1",
             )}
           >

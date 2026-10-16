@@ -620,6 +620,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.rightPanelSide !== DEFAULT_UNIFIED_SETTINGS.rightPanelSide
         ? ["Right panel position"]
         : []),
+      ...(settings.fileTreeSide !== DEFAULT_UNIFIED_SETTINGS.fileTreeSide
+        ? ["File tree position"]
+        : []),
       ...(settings.proactivePanelsEnabled !== DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled
         ? ["Proactive panels"]
         : []),
@@ -709,6 +712,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.diffLayout,
       settings.diffEngine,
       settings.rightPanelSide,
+      settings.fileTreeSide,
       settings.proactivePanelsEnabled,
       settings.environmentIdentificationMode,
       settings.contextWindowMeterEnabled,
@@ -822,6 +826,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       diffLayout: DEFAULT_UNIFIED_SETTINGS.diffLayout,
       diffEngine: DEFAULT_UNIFIED_SETTINGS.diffEngine,
       rightPanelSide: DEFAULT_UNIFIED_SETTINGS.rightPanelSide,
+      fileTreeSide: DEFAULT_UNIFIED_SETTINGS.fileTreeSide,
       proactivePanelsEnabled: DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled,
       showSkillsInSlashMenu: DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu,
       composerCollapseOnScroll: DEFAULT_UNIFIED_SETTINGS.composerCollapseOnScroll,
@@ -2800,6 +2805,42 @@ export function GeneralSettingsPanel() {
                 </SelectItem>
                 <SelectItem hideIndicator value="left">
                   {RIGHT_PANEL_SIDE_LABELS.left}
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          {...searchableSetting("file-tree-position")}
+          description="Show the file tree to the left or right of code and diffs. The swap button next to the file tree toggle changes this too."
+          resetAction={
+            settings.fileTreeSide !== DEFAULT_UNIFIED_SETTINGS.fileTreeSide ? (
+              <SettingResetButton
+                label="file tree position"
+                onClick={() =>
+                  updateSettings({ fileTreeSide: DEFAULT_UNIFIED_SETTINGS.fileTreeSide })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.fileTreeSide}
+              onValueChange={(value) => {
+                if (value === "left" || value === "right") {
+                  updateSettings({ fileTreeSide: value });
+                }
+              }}
+            >
+              <SelectTrigger size="sm" className="w-full sm:w-40" aria-label="File tree position">
+                <SelectValue>{RIGHT_PANEL_SIDE_LABELS[settings.fileTreeSide]}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="left">
+                  {RIGHT_PANEL_SIDE_LABELS.left}
+                </SelectItem>
+                <SelectItem hideIndicator value="right">
+                  {RIGHT_PANEL_SIDE_LABELS.right}
                 </SelectItem>
               </SelectPopup>
             </Select>
