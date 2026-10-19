@@ -11,6 +11,7 @@ import type {
   PullRequestDiffSide,
   PullRequestOmittedFileStat,
   PullRequestRef,
+  PullRequestReviewGuide,
   PullRequestReviewPosition,
   PullRequestReviewThread,
   PullRequestThreadCommentsResult,
@@ -27,6 +28,7 @@ import {
   PilcrowIcon,
   Rows3Icon,
   Settings2Icon,
+  SparklesIcon,
   TextWrapIcon,
   TriangleAlertIcon,
 } from "lucide-react";
@@ -41,7 +43,7 @@ import { useTheme } from "~/hooks/useTheme";
 import { areAllDiffFilesCollapsed } from "~/lib/diffCollapse";
 import { pullRequestFindingKey, type PullRequestFinding } from "./pullRequestDetail.logic";
 import { canEditPullRequestComment, canResolvePullRequestThread } from "./pullRequestEditing.logic";
-import { orderDiffFiles } from "./pullRequestFileOrder.logic";
+import { orderDiffFiles, orderDiffFilesByGuide } from "./pullRequestFileOrder.logic";
 import {
   buildFileDiffRenderKey,
   fnv1a32,
@@ -76,6 +78,7 @@ import { StyledDiffCodeView } from "../diffs/StyledDiffCodeView";
 import { Button } from "../ui/button";
 import { MorphIcon } from "~/components/MorphIcon";
 import { Checkbox } from "../ui/checkbox";
+import { Spinner } from "../ui/spinner";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import {
   DropdownMenu,
@@ -201,6 +204,7 @@ function PullRequestCodeTab({
   onRefresh,
   refreshToken = 0,
   revealRequest = null,
+  guideOrder,
 }: {
   scrollerRef: (node: HTMLDivElement | null) => void;
   environmentId: EnvironmentId;
@@ -220,6 +224,15 @@ function PullRequestCodeTab({
   refreshToken?: number;
   /** A file another tab asked to show. A new nonce asks again for the same path. */
   revealRequest?: { readonly path: string; readonly nonce: number } | null;
+  /**
+   * The review guide, whose tour can order the files, and the way to write one when there is
+   * none. Null `onWrite` where this reader cannot start a guide; absent where guides are off.
+   */
+  guideOrder?: {
+    readonly guide: PullRequestReviewGuide | null;
+    readonly running: boolean;
+    readonly onWrite: (() => void) | null;
+  };
 }) {
   const { resolvedTheme } = useTheme();
   const settings = useClientSettings();
@@ -261,6 +274,11 @@ function PullRequestCodeTab({
   );
 
   const referenceKey = pullRequestReviewKey(reference);
+  // Kept against the pull request it was asked for, so moving to another one starts in the
+  // default order instead of writing a guide nobody asked for there.
+  const [guideOrderKey, setGuideOrderKey] = useState<string | null>(null);
+  const guideOrdered = guideOrder !== undefined && guideOrderKey === referenceKey;
+  const orderingGuide = guideOrdered ? guideOrder.guide : null;
   const commit = selectedCommitOid;
   // One commit's own changes and the whole change are two different diffs, paged separately, so
   // everything below is keyed by both.
@@ -408,9 +426,13 @@ function PullRequestCodeTab({
   const files = useMemo(
     () =>
       parsedSlices.flatMap((parsed) =>
-        parsed?.kind === "files" ? orderDiffFiles(parsed.files) : [],
+        parsed?.kind !== "files"
+          ? []
+          : orderingGuide === null
+            ? orderDiffFiles(parsed.files)
+            : orderDiffFilesByGuide(parsed.files, orderingGuide),
       ),
-    [parsedSlices],
+    [orderingGuide, parsedSlices],
   );
   const filePaths = useMemo(() => files.map((file) => resolveFileDiffPath(file)), [files]);
   // Offered under a commit scope as well as from the whole change, because reading a change one
@@ -1127,6 +1149,15 @@ function PullRequestCodeTab({
     setDraft(null);
     setSelectedLines(null);
   };
+  // Pressing it with no guide yet writes one; the files follow it once it lands.
+  const guideOrderWriting = guideOrdered && guideOrder.guide === null && guideOrder.running;
+  const guideOrderLabel = guideOrderWriting
+    ? "Writing the review guide to order files..."
+    : guideOrdered
+      ? "Use the default file order"
+      : guideOrder?.guide == null
+        ? "Write a review guide and order files by it"
+        : "Order files as the review guide reads them";
   const toolbar = (
     <div className="@container flex h-10 min-h-10 shrink-0 items-center justify-between gap-2 border-b border-border/60 bg-background px-4 text-xs text-muted-foreground">
       <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -1438,6 +1469,29 @@ function PullRequestCodeTab({
             <TooltipPopup side="top">
               {allFilesCollapsed ? "Expand all files" : "Collapse all files"}
             </TooltipPopup>
+          </Tooltip>
+        ) : null}
+        {fileKeys.length > 0 &&
+        guideOrder !== undefined &&
+        (guideOrder.guide !== null || guideOrder.onWrite !== null) ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Toggle
+                  aria-label={guideOrderLabel}
+                  variant="ghost"
+                  size="sm"
+                  pressed={guideOrdered}
+                  onPressedChange={(pressed) => {
+                    setGuideOrderKey(pressed ? referenceKey : null);
+                    if (pressed && guideOrder.guide === null) guideOrder.onWrite?.();
+                  }}
+                />
+              }
+            >
+              {guideOrderWriting ? <Spinner size="sm" /> : <SparklesIcon className="size-3.5" />}
+            </TooltipTrigger>
+            <TooltipPopup side="top">{guideOrderLabel}</TooltipPopup>
           </Tooltip>
         ) : null}
         {fileKeys.length > 0 ? (

@@ -3071,6 +3071,15 @@ export function PullRequestDetailPanel({
                     onRefresh={refreshDetail}
                     refreshToken={codeRefreshToken}
                     revealRequest={codeRevealRequest}
+                    {...(reviewGuidesEnabled
+                      ? {
+                          guideOrder: {
+                            guide: guideWriter.data?.guide ?? null,
+                            running: guideWriter.running,
+                            onWrite: guideWriter.canWrite ? () => void guideWriter.write() : null,
+                          },
+                        }
+                      : {})}
                   />
                 </Suspense>
               </div>

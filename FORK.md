@@ -7,6 +7,8 @@ This fork is upstream [pingdotgg/t3code](https://github.com/pingdotgg/t3code) pl
 - **Neovim as an editor**: with `nvim` on the server's PATH, "Open in Neovim" (the default
   until another editor is picked) opens a new side-panel terminal running `nvim`, so LazyVim works
   locally and over remote connections.
+- **Guide reading order in Code**: the sparkle button in a pull request's Code tab orders files as
+  the review guide reads them, writing the guide first if there is none.
 - **Swap chat and panel**: the ⇄ button next to Maximize moves the right panel to the left.
 - **Updates from this fork**: builds of this fork update from this fork's releases.
 

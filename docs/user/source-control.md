@@ -221,6 +221,10 @@ about them; comments wait with the ones from the **Code** tab until you send the
 suggested question, or **Ask about this stop**, to open a thread that already knows which stop you
 are on. **Finish review** on the last stop opens the review with everything you collected.
 
+On web, the sparkle button in the **Code** tab's toolbar lists the files in the order the guide
+reaches them, writing the guide first if there is none. Press it again to return to the default
+order.
+
 Agents can write guides too: ask one to prepare guides for a set of pull requests, and it starts
 them for you. Each is read through the project whose checkout has that repository.
 

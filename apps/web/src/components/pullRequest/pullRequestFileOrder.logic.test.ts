@@ -1,7 +1,8 @@
 import type { FileDiffMetadata } from "@pierre/diffs";
+import type { PullRequestReviewGuide } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { orderDiffFiles } from "./pullRequestFileOrder.logic";
+import { orderDiffFiles, orderDiffFilesByGuide } from "./pullRequestFileOrder.logic";
 
 /** Only the path and the patch's own lines matter here; the viewer fills the rest in. */
 function file(name: string, additionLines: ReadonlyArray<string> = []): FileDiffMetadata {
@@ -160,5 +161,47 @@ describe("orderDiffFiles", () => {
       file("yarn.lock"),
     ];
     expect(order(files)).toEqual(order(files.toReversed()));
+  });
+});
+
+/** A guide whose stops excerpt the first paths of each entry and list the rest. */
+function guide(
+  stops: ReadonlyArray<{ excerpts?: ReadonlyArray<string>; files?: ReadonlyArray<string> }>,
+): PullRequestReviewGuide {
+  return {
+    stops: stops.map((stop) => ({
+      excerpts: (stop.excerpts ?? []).map((path) => ({ path })),
+      files: (stop.files ?? []).map((path) => ({ path })),
+    })),
+  } as unknown as PullRequestReviewGuide;
+}
+
+describe("orderDiffFilesByGuide", () => {
+  it("follows the tour, placing each file at the first stop that names it", () => {
+    const files = ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"].map((path) => file(path));
+    expect(
+      orderDiffFilesByGuide(
+        files,
+        guide([
+          { excerpts: ["src/c.ts", "src/a.ts"] },
+          { excerpts: ["src/c.ts"], files: ["src/d.ts"] },
+          { files: ["src/b.ts", "src/a.ts"] },
+        ]),
+      ).map((entry) => entry.name),
+    ).toEqual(["src/c.ts", "src/a.ts", "src/d.ts", "src/b.ts"]);
+  });
+
+  it("keeps files the guide never names after it, in the default order", () => {
+    const files = [
+      file("src/a.test.ts"),
+      file("src/a.ts", ['import { b } from "./b";']),
+      file("src/b.ts"),
+      file("src/z.ts"),
+    ];
+    expect(
+      orderDiffFilesByGuide(files, guide([{ excerpts: ["src/z.ts", "src/gone.ts"] }])).map(
+        (entry) => entry.name,
+      ),
+    ).toEqual(["src/z.ts", "src/b.ts", "src/a.ts", "src/a.test.ts"]);
   });
 });

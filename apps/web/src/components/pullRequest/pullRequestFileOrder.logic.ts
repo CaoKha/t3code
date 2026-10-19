@@ -1,4 +1,5 @@
 import type { FileDiffMetadata } from "@pierre/diffs";
+import type { PullRequestReviewGuide } from "@t3tools/contracts";
 
 import { resolveFileDiffPath } from "~/lib/diffRendering";
 
@@ -194,4 +195,25 @@ export function orderDiffFiles(
     .sort((left, right) => left.localeCompare(right));
 
   return [...orderedSource, ...orderedTests, ...orderedGenerated].map((path) => byPath.get(path)!);
+}
+
+/**
+ * Diff files in the order the review guide's tour reaches them, each at the first stop that
+ * excerpts or lists it. A file the guide never names, say one pushed after it was written, keeps
+ * its place in `orderDiffFiles` after every file the guide does name.
+ */
+export function orderDiffFilesByGuide(
+  files: ReadonlyArray<FileDiffMetadata>,
+  guide: PullRequestReviewGuide,
+): ReadonlyArray<FileDiffMetadata> {
+  const ranks = new Map<string, number>();
+  for (const stop of guide.stops) {
+    for (const { path } of [...stop.excerpts, ...stop.files]) {
+      if (!ranks.has(path)) ranks.set(path, ranks.size);
+    }
+  }
+  const rank = (file: FileDiffMetadata) =>
+    ranks.get(resolveFileDiffPath(file)) ?? Number.MAX_SAFE_INTEGER;
+  // `toSorted` is stable, so files sharing the unnamed rank keep the default order between them.
+  return orderDiffFiles(files).toSorted((left, right) => rank(left) - rank(right));
 }
