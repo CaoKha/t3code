@@ -10,7 +10,6 @@ export const CheckpointDiffOperation = Schema.Literals([
 ]);
 export type CheckpointDiffOperation = typeof CheckpointDiffOperation.Type;
 
-/** The computed result does not satisfy the checkpoint RPC contract. */
 export class CheckpointDiffResultInvalidError extends Schema.TaggedError<CheckpointDiffResultInvalidError>()(
   "CheckpointDiffResultInvalidError",
   {
@@ -25,7 +24,6 @@ export class CheckpointDiffResultInvalidError extends Schema.TaggedError<Checkpo
   }
 }
 
-/** Projection state no longer contains the requested checkpoint thread. */
 export class CheckpointThreadNotFoundError extends Schema.TaggedError<CheckpointThreadNotFoundError>()(
   "CheckpointThreadNotFoundError",
   {
@@ -38,7 +36,6 @@ export class CheckpointThreadNotFoundError extends Schema.TaggedError<Checkpoint
   }
 }
 
-/** The checkpoint thread has no workspace path from which to compute a diff. */
 export class CheckpointWorkspacePathMissingError extends Schema.TaggedError<CheckpointWorkspacePathMissingError>()(
   "CheckpointWorkspacePathMissingError",
   {
@@ -53,7 +50,6 @@ export class CheckpointWorkspacePathMissingError extends Schema.TaggedError<Chec
   }
 }
 
-/** The requested turn lies beyond the latest available checkpoint. */
 export class CheckpointTurnRangeUnavailableError extends Schema.TaggedError<CheckpointTurnRangeUnavailableError>()(
   "CheckpointTurnRangeUnavailableError",
   {
@@ -68,7 +64,6 @@ export class CheckpointTurnRangeUnavailableError extends Schema.TaggedError<Chec
   }
 }
 
-/** Expected checkpoint metadata does not contain the requested Git ref. */
 export class CheckpointRefUnavailableError extends Schema.TaggedError<CheckpointRefUnavailableError>()(
   "CheckpointRefUnavailableError",
   {

@@ -40,7 +40,6 @@ export const ReviewDiffPreviewSource = Schema.Struct({
   diff: Schema.String,
   diffHash: TrimmedNonEmptyString,
   truncated: Schema.Boolean,
-  /** Complete statistics, independent of patch limits. Absent on older servers. */
   files: Schema.optionalKey(Schema.Array(ReviewDiffFileStat)),
 });
 export type ReviewDiffPreviewSource = typeof ReviewDiffPreviewSource.Type;

@@ -1,13 +1,12 @@
 import { ArrowLeftRightIcon } from "lucide-react";
 
-import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings";
+import { updateClientSettings, useClientSettings } from "~/hooks/useSettings";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 /** Swaps the diff file tree between the left and right of the diff. Render it only while the tree is open. */
 export function FileTreeSideControl() {
   const side = useClientSettings((settings) => settings.fileTreeSide);
-  const updateClientSettings = useUpdateClientSettings();
   const label = side === "left" ? "Move file tree to the right" : "Move file tree to the left";
   return (
     <Tooltip>

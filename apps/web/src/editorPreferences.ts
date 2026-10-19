@@ -17,7 +17,6 @@ import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { getLocalStorageItem, setLocalStorageItem, useLocalStorage } from "./hooks/useLocalStorage";
-import { useCallback, useMemo } from "react";
 import { shellEnvironment } from "./state/shell";
 import { useAtomCommand } from "./state/use-atom-command";
 import { readEnvironmentScope } from "./state/session";
@@ -52,10 +51,10 @@ export class PreferredEditorUnavailableError extends Schema.TaggedError<Preferre
 export function usePreferredEditor(availableEditors: ReadonlyArray<EditorId>) {
   const [lastEditor, setLastEditor] = useLocalStorage(LAST_EDITOR_KEY, null, EditorId);
 
-  const effectiveEditor = useMemo(() => {
-    if (lastEditor && availableEditors.includes(lastEditor)) return lastEditor;
-    return EDITORS.find((editor) => availableEditors.includes(editor.id))?.id ?? null;
-  }, [lastEditor, availableEditors]);
+  const effectiveEditor =
+    lastEditor && availableEditors.includes(lastEditor)
+      ? lastEditor
+      : (EDITORS.find((editor) => availableEditors.includes(editor.id))?.id ?? null);
 
   return [effectiveEditor, setLastEditor] as const;
 }
@@ -76,27 +75,24 @@ function resolveAndPersistPreferredEditor(availableEditors: readonly EditorId[])
 export function useOpenInEditor(options?: string | AtomCommandOptions) {
   const openInEditor = useAtomCommand(shellEnvironment.openInEditor, options);
   type OpenInEditorResult = Awaited<ReturnType<typeof openInEditor>>;
-  return useCallback(
-    async (
-      value: Parameters<typeof openInEditor>[0],
-    ): Promise<
-      AtomCommandResult<
-        AtomCommandSuccess<OpenInEditorResult>,
-        AtomCommandFailure<OpenInEditorResult> | TerminalEditorUnavailableError
-      >
-    > => {
-      const { environmentId, input } = value;
-      if (!editorRunsInTerminal(input.editor) || input.reveal === true) {
-        return openInEditor(value);
-      }
-      return runTerminalEditor(environmentId, input.editor, input.cwd)
-        ? AsyncResult.success(undefined)
-        : AsyncResult.failure(
-            Cause.fail(new TerminalEditorUnavailableError({ targetPath: input.cwd })),
-          );
-    },
-    [openInEditor],
-  );
+  return async (
+    value: Parameters<typeof openInEditor>[0],
+  ): Promise<
+    AtomCommandResult<
+      AtomCommandSuccess<OpenInEditorResult>,
+      AtomCommandFailure<OpenInEditorResult> | TerminalEditorUnavailableError
+    >
+  > => {
+    const { environmentId, input } = value;
+    if (!editorRunsInTerminal(input.editor) || input.reveal === true) {
+      return openInEditor(value);
+    }
+    return runTerminalEditor(environmentId, input.editor, input.cwd)
+      ? AsyncResult.success(undefined)
+      : AsyncResult.failure(
+          Cause.fail(new TerminalEditorUnavailableError({ targetPath: input.cwd })),
+        );
+  };
 }
 
 export function useOpenInPreferredEditor(
@@ -106,58 +102,55 @@ export function useOpenInPreferredEditor(
   const openInEditor = useOpenInEditor({ reportFailure: false });
   type OpenInEditorError = AtomCommandFailure<Awaited<ReturnType<typeof openInEditor>>>;
 
-  return useCallback(
-    async (
-      targetPath: string,
-    ): Promise<
-      AtomCommandResult<
-        EditorId,
-        | OpenInEditorError
-        | PreferredEditorEnvironmentRequiredError
-        | PreferredEditorUnavailableError
-        | EnvironmentAuthorizationError
-      >
-    > => {
-      if (environmentId === null) {
-        return AsyncResult.failure(
-          Cause.fail(
-            new PreferredEditorEnvironmentRequiredError({
-              targetPath,
-            }),
-          ),
-        );
-      }
-      if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) {
-        return AsyncResult.failure(
-          Cause.fail(
-            new EnvironmentAuthorizationError({
-              requiredScope: AuthOrchestrationOperateScope,
-              message: "This connection cannot open an editor on this environment.",
-            }),
-          ),
-        );
-      }
-      const editor = resolveAndPersistPreferredEditor(availableEditors);
-      if (!editor) {
-        return AsyncResult.failure(
-          Cause.fail(
-            new PreferredEditorUnavailableError({
-              environmentId,
-              targetPath,
-              availableEditorIds: availableEditors,
-            }),
-          ),
-        );
-      }
-      const result = await openInEditor({
-        environmentId,
-        input: {
-          cwd: targetPath,
-          editor,
-        },
-      });
-      return mapAtomCommandResult(result, () => editor);
-    },
-    [availableEditors, environmentId, openInEditor],
-  );
+  return async (
+    targetPath: string,
+  ): Promise<
+    AtomCommandResult<
+      EditorId,
+      | OpenInEditorError
+      | PreferredEditorEnvironmentRequiredError
+      | PreferredEditorUnavailableError
+      | EnvironmentAuthorizationError
+    >
+  > => {
+    if (environmentId === null) {
+      return AsyncResult.failure(
+        Cause.fail(
+          new PreferredEditorEnvironmentRequiredError({
+            targetPath,
+          }),
+        ),
+      );
+    }
+    if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) {
+      return AsyncResult.failure(
+        Cause.fail(
+          new EnvironmentAuthorizationError({
+            requiredScope: AuthOrchestrationOperateScope,
+            message: "This connection cannot open an editor on this environment.",
+          }),
+        ),
+      );
+    }
+    const editor = resolveAndPersistPreferredEditor(availableEditors);
+    if (!editor) {
+      return AsyncResult.failure(
+        Cause.fail(
+          new PreferredEditorUnavailableError({
+            environmentId,
+            targetPath,
+            availableEditorIds: availableEditors,
+          }),
+        ),
+      );
+    }
+    const result = await openInEditor({
+      environmentId,
+      input: {
+        cwd: targetPath,
+        editor,
+      },
+    });
+    return mapAtomCommandResult(result, () => editor);
+  };
 }
