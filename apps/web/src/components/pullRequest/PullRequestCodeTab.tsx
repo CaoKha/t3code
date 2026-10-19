@@ -65,6 +65,7 @@ import {
 import { APP_BASE_NAME } from "~/branding";
 import { PREFERRED_HIGHLIGHTER } from "~/lib/syntaxHighlighting";
 import { cn } from "~/lib/utils";
+import { observeVisibleAnimation } from "~/lib/visibleAnimation";
 import { createPullRequestDiffFileContentsLoader } from "~/lib/diffFileContents";
 import { DifftasticDiffView, type DifftasticViewHandle } from "../diffs/DifftasticDiffView";
 import {
@@ -86,7 +87,6 @@ import { StyledDiffCodeView } from "../diffs/StyledDiffCodeView";
 import { Button } from "../ui/button";
 import { MorphIcon } from "~/components/MorphIcon";
 import { Checkbox } from "../ui/checkbox";
-import { Spinner } from "../ui/spinner";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import {
   DropdownMenu,
@@ -160,6 +160,43 @@ const NO_SLICES: ReadonlyArray<DiffSlice> = [];
 // Each slice is parsed once per cache key and the parse lives as long as the slice does, so a
 // slice arriving costs one parse rather than one per slice already on screen.
 const sliceParses = new WeakMap<DiffSlice, Map<string, RenderablePatch | null>>();
+
+const GUIDE_PROGRESS_RADIUS = 12.75;
+const GUIDE_PROGRESS_CIRCUMFERENCE = 2 * Math.PI * GUIDE_PROGRESS_RADIUS;
+
+/**
+ * Traces the edge of the guide-order toggle while the guide is written, drawn like the desktop
+ * update's download ring. The run reports no percentage, so the arc travels instead of filling.
+ */
+function GuideOrderProgressRing() {
+  return (
+    <svg
+      aria-hidden="true"
+      ref={observeVisibleAnimation}
+      className="pointer-events-none absolute inset-0 mx-0! size-full motion-safe:visible-animate-spin"
+      viewBox="0 0 28 28"
+    >
+      <circle
+        cx="14"
+        cy="14"
+        r={GUIDE_PROGRESS_RADIUS}
+        fill="none"
+        className="stroke-current/22"
+        strokeWidth="1.5"
+      />
+      <circle
+        cx="14"
+        cy="14"
+        r={GUIDE_PROGRESS_RADIUS}
+        fill="none"
+        stroke="currentColor"
+        strokeDasharray={`${GUIDE_PROGRESS_CIRCUMFERENCE * 0.28} ${GUIDE_PROGRESS_CIRCUMFERENCE}`}
+        strokeLinecap="round"
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
 
 function parseSlice(slice: DiffSlice, cacheKey: string, ignoreWhitespace: boolean) {
   let parses = sliceParses.get(slice);
@@ -1354,7 +1391,8 @@ function PullRequestCodeTab({
                 />
               }
             >
-              {guideOrderWriting ? <Spinner size="sm" /> : <SparklesIcon className="size-3.5" />}
+              {guideOrderWriting ? <GuideOrderProgressRing /> : null}
+              <SparklesIcon className="size-3.5" />
             </TooltipTrigger>
             <TooltipPopup side="top">{guideOrderLabel}</TooltipPopup>
           </Tooltip>
