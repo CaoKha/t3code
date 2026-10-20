@@ -523,6 +523,9 @@ function PullRequestCodeTab({
     resolve: hostReview.resolve && detail.viewerPermissions.resolve,
   };
   const canCommentOnLines = review.inlineComment && commit === null;
+  // Review comments anchor to the whole change's diff, so a scoped commit can't take one; asking
+  // the agent needs no host anchor and works on whatever diff is on screen.
+  const canSelectLines = canCommentOnLines || onAddToAgentSelection !== undefined;
   // The cache key carries the theme, which is what the tokenizer caches against, so a theme
   // change is still a fresh parse. The patch's own hash is part of it too: a refreshed page
   // reuses its cursor, and a key of position alone would hand back the parse it replaced.
@@ -790,7 +793,7 @@ function PullRequestCodeTab({
     range: SelectedLineRange | null,
     context: { item: CodeViewItem<ReviewAnnotationGroup> },
   ) => {
-    if (!range || !canCommentOnLines) return;
+    if (!range || !canSelectLines) return;
     const item = context.item;
     if (item.type !== "diff") return;
     const file = files.find((candidate) => buildFileDiffRenderKey(candidate) === item.id);
@@ -828,7 +831,10 @@ function PullRequestCodeTab({
         : buildDiffReviewComment({
             id: `pull-request-selection:${anchor.fileKey}:${anchor.range.start}:${anchor.range.end}`,
             sectionId: `pull-request:${detail.number}`,
-            sectionTitle: `PR #${detail.number} review`,
+            sectionTitle:
+              commit === null
+                ? `PR #${detail.number} review`
+                : `PR #${detail.number} review, commit ${commit.slice(0, 7)}`,
             filePath: anchor.path,
             fileDiff: file,
             range: anchor.range,
@@ -914,8 +920,8 @@ function PullRequestCodeTab({
     themeType: resolvedTheme,
     stickyHeaders: true,
     loadDiffFiles,
-    enableGutterUtility: canCommentOnLines && draft === null,
-    enableLineSelection: canCommentOnLines && draft === null,
+    enableGutterUtility: canSelectLines && draft === null,
+    enableLineSelection: canSelectLines && draft === null,
     onGutterUtilityClick: beginComment,
     onLineSelectionEnd: beginComment,
   };
@@ -1012,7 +1018,24 @@ function PullRequestCodeTab({
           onRemove={() => removeComment(reviewKey, comment.id)}
         />
       ))}
-      {annotation.metadata.draft && draft ? (
+      {annotation.metadata.draft && draft && !canCommentOnLines && onAddToAgentSelection ? (
+        <DiffCommentAnnotation
+          kind="draft"
+          rangeLabel={`${draft.path}:${getReviewPositionAnchor(draft.position).line}`}
+          text=""
+          placeholder="Ask the agent about these lines…"
+          submitLabel="Add to agent"
+          onCancel={() => {
+            setDraft(null);
+            setSelectedLines(null);
+          }}
+          onComment={(text) =>
+            finishSelection(draft, text, (comment) =>
+              onAddToAgentSelection({ comment, request: text }),
+            )
+          }
+        />
+      ) : annotation.metadata.draft && draft ? (
         <DiffCommentAnnotation
           kind="draft"
           rangeLabel={`${draft.path}:${getReviewPositionAnchor(draft.position).line}`}
