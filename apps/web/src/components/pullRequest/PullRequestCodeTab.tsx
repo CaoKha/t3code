@@ -783,11 +783,10 @@ function PullRequestCodeTab({
     setToggledFiles(new Set());
   };
 
-  const orderedCommits = // By instant, not by the text: GitLab keeps a commit's own UTC offset, so two commits
-    // from different zones would sort by how they were written rather than when they landed.
-    detail.commits.toSorted(
-      (left, right) => Date.parse(right.committedDate) - Date.parse(left.committedDate),
-    );
+  // Hosts list the branch's commits in history order, oldest first; reversed, that reads like
+  // `git log`. Committer dates can't stand in for it: a rebase stamps a run of commits with the
+  // same second, and an amended or cherry-picked commit can carry an older one.
+  const orderedCommits = detail.commits.toReversed();
 
   const beginComment = (
     range: SelectedLineRange | null,
