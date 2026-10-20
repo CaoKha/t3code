@@ -240,6 +240,25 @@ const TABS: ReadonlyArray<{ value: DetailTab; label: string }> = [
   { value: "code", label: "Code" },
 ];
 
+/**
+ * The tab and commit scope each pull request was left on. Switching the right panel to another
+ * surface unmounts the panel, and coming back should not start over on Summary.
+ */
+const panelViews = new Map<
+  string,
+  { readonly tab: DetailTab; readonly commitOid: string | null }
+>();
+const PANEL_VIEW_CAPACITY = 32;
+
+function rememberPanelView(key: string, view: { tab: DetailTab; commitOid: string | null }) {
+  panelViews.delete(key);
+  if (panelViews.size >= PANEL_VIEW_CAPACITY) {
+    const oldest = panelViews.keys().next().value;
+    if (oldest !== undefined) panelViews.delete(oldest);
+  }
+  panelViews.set(key, view);
+}
+
 // The diff viewer pulls in its worker pool, so load it only when the reader approaches Code.
 const loadCodeTab = () => import("./PullRequestCodeTab");
 const PullRequestCodeTab = lazy(loadCodeTab);
@@ -630,12 +649,13 @@ export function PullRequestDetailPanel({
       : null;
   const [threadPickerOpen, setThreadPickerOpen] = useState(false);
   const [openReviewRequest, setOpenReviewRequest] = useState(0);
-  const [tab, setTab] = useState<DetailTab>("summary");
+  const tabScopeKey = `${environmentId}:${pullRequestKey}`;
+  const [tab, setTab] = useState<DetailTab>(() => panelViews.get(tabScopeKey)?.tab ?? "summary");
   const [timelineOrder, setTimelineOrder] = useState<"newest" | "oldest">("newest");
   const [codeCommitScope, setCodeCommitScope] = useState<{
     readonly pullRequestKey: string;
     readonly oid: string | null;
-  }>(() => ({ pullRequestKey, oid: null }));
+  }>(() => ({ pullRequestKey, oid: panelViews.get(tabScopeKey)?.commitOid ?? null }));
   const selectedCodeCommitOid =
     codeCommitScope.pullRequestKey === pullRequestKey ? codeCommitScope.oid : null;
   const selectCodeCommit = (oid: string | null) => {
@@ -662,10 +682,12 @@ export function PullRequestDetailPanel({
   useEffect(() => {
     if (guideOpenRequested) useGuideRunStore.getState().requestOpen(null);
   }, [guideOpenRequested]);
-  const tabScopeKey = `${environmentId}:${pullRequestKey}`;
+  useEffect(() => {
+    rememberPanelView(tabScopeKey, { tab, commitOid: selectedCodeCommitOid });
+  }, [selectedCodeCommitOid, tab, tabScopeKey]);
   const [tabMountState, setTabMountState] = useState(() => ({
     key: tabScopeKey,
-    tabs: new Set<DetailTab>(["summary"]),
+    tabs: new Set<DetailTab>([tab]),
   }));
   // A previously visited Code tab must not fetch diffs for every later PR while hidden.
   const mountedTabs =
@@ -2870,6 +2892,7 @@ export function PullRequestDetailPanel({
                     detail={detail}
                     selectedCommitOid={selectedCodeCommitOid}
                     onSelectedCommitChange={selectCodeCommit}
+                    commitsLoaded={activity !== null}
                     pendingFinding={handoff}
                     fixFindingLabel={handoffLabels.fixFinding}
                     {...(canFixFindings ? { onFixFinding: startFixFinding } : {})}

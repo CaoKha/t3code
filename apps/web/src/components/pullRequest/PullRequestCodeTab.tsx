@@ -295,6 +295,7 @@ function PullRequestCodeTab({
   detail,
   selectedCommitOid,
   onSelectedCommitChange,
+  commitsLoaded,
   pendingFinding,
   fixFindingLabel = "Fix in a thread",
   onFixFinding,
@@ -310,6 +311,8 @@ function PullRequestCodeTab({
   detail: PullRequestDetailView;
   selectedCommitOid: string | null;
   onSelectedCommitChange: (oid: string | null) => void;
+  /** False until the change's commit list has loaded; an empty list then means none yet known. */
+  commitsLoaded: boolean;
   pendingFinding?: string | null;
   fixFindingLabel?: string;
   onFixFinding?: (finding: PullRequestFinding) => void;
@@ -1471,10 +1474,10 @@ function PullRequestCodeTab({
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Re-checked as pages load until the requested file arrives.
   }, [canLoadNextSlice, items, revealRequest]);
   useEffect(() => {
-    if (commit !== null && selectedCommit === undefined) {
+    if (commitsLoaded && commit !== null && selectedCommit === undefined) {
       onSelectedCommitChange(null);
     }
-  }, [commit, onSelectedCommitChange, selectedCommit]);
+  }, [commit, commitsLoaded, onSelectedCommitChange, selectedCommit]);
   const withToolbar = (body: ReactNode) => (
     <div className="flex h-full min-h-0 flex-col">
       {toolbar}
