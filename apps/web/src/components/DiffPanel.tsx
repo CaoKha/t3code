@@ -81,6 +81,7 @@ import {
 } from "./ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { useEnvironmentQuery } from "../state/query";
+import { orchestrationEnvironment } from "../state/orchestration";
 import { useAtomCommand } from "../state/use-atom-command";
 import { serverEnvironment } from "../state/server";
 import { reviewEnvironment } from "../state/review";
@@ -279,45 +280,73 @@ export default function DiffPanel({
     return right.completedAt.localeCompare(left.completedAt);
   });
 
+  const latestTurn = orderedTurnDiffSummaries[0];
+  // A turn has no checkpoint until it finishes, so while it runs its changes are read live.
+  const runningRunId = activeThread?.runtime?.activeRunId ?? null;
+  const liveRunId =
+    runningRunId !== null &&
+    !orderedTurnDiffSummaries.some((summary) => summary.runId === runningRunId)
+      ? runningRunId
+      : null;
+
   useEffect(() => {
     if (!routeThreadRef || diffSelection.kind !== "turn") return;
-    useDiffPanelStore.getState().reconcileTurnSelection(
-      routeThreadRef,
-      orderedTurnDiffSummaries.map((summary) => summary.runId),
-    );
-  }, [diffSelection, orderedTurnDiffSummaries, routeThreadRef]);
+    const turnIds = orderedTurnDiffSummaries.map((summary) => summary.runId);
+    useDiffPanelStore
+      .getState()
+      .reconcileTurnSelection(
+        routeThreadRef,
+        liveRunId === null ? turnIds : [liveRunId, ...turnIds],
+      );
+  }, [diffSelection, liveRunId, orderedTurnDiffSummaries, routeThreadRef]);
+
+  // "Latest turn" follows a new turn as soon as it starts, not once it has finished.
+  useEffect(() => {
+    if (!routeThreadRef || liveRunId === null || diffSelection.kind !== "turn") return;
+    if (diffSelection.turnId === liveRunId) return;
+    if (latestTurn !== undefined && diffSelection.turnId !== latestTurn.runId) return;
+    useDiffPanelStore.getState().selectTurn(routeThreadRef, liveRunId);
+  }, [diffSelection, latestTurn, liveRunId, routeThreadRef]);
 
   const selectedRunId = diffSelection.kind === "turn" ? diffSelection.turnId : null;
+  const liveTurnSelected = liveRunId !== null && selectedRunId === liveRunId;
   const selectedGitScope = diffSelection.kind === "unstaged" ? "unstaged" : "branch";
   const selectedBaseRef = diffSelection.kind === "branch" ? diffSelection.baseRef : null;
   const selectedFilePath = diffSelection.kind === "turn" ? diffSelection.filePath : null;
   const selectedFileRevealRequestId =
     diffSelection.kind === "turn" ? diffSelection.revealRequestId : 0;
   const selectedTurn =
-    selectedRunId === null
+    selectedRunId === null || liveTurnSelected
       ? undefined
       : (orderedTurnDiffSummaries.find((summary) => summary.runId === selectedRunId) ??
         orderedTurnDiffSummaries[0]);
   const selectedCheckpointTurnCount = selectedTurn?.checkpointTurnCount;
-  const latestTurn = orderedTurnDiffSummaries[0];
+  const isTurnSelection = selectedTurn !== undefined || liveTurnSelected;
+  const liveFromTurnCount = latestTurn?.checkpointTurnCount ?? 0;
   const selectedScopeLabel =
     selectedRunId === null
       ? selectedGitScope === "unstaged"
         ? "Uncommitted"
         : "Changes"
-      : selectedTurn?.runId === latestTurn?.runId
+      : liveTurnSelected || selectedTurn?.runId === latestTurn?.runId
         ? "Latest turn"
         : `Turn ${selectedCheckpointTurnCount ?? "?"}`;
-  const reviewSectionId = selectedTurn ? `turn:${selectedTurn.runId}` : selectedGitScope;
+  const reviewSectionId = liveTurnSelected
+    ? `turn:${liveRunId}`
+    : selectedTurn
+      ? `turn:${selectedTurn.runId}`
+      : selectedGitScope;
   const collapseScopeKey = routeThreadRef
     ? `${routeThreadRef.environmentId}:${routeThreadRef.threadId}:${reviewSectionId}`
     : null;
   const codeViewMountKey = `${collapseScopeKey ?? reviewSectionId}:${codeViewRevision}`;
-  const reviewSectionTitle = selectedTurn
-    ? `Turn ${selectedCheckpointTurnCount ?? "?"}`
-    : selectedGitScope === "unstaged"
-      ? "Uncommitted"
-      : "Changes";
+  const reviewSectionTitle = liveTurnSelected
+    ? `Turn ${liveFromTurnCount + 1}`
+    : selectedTurn
+      ? `Turn ${selectedCheckpointTurnCount ?? "?"}`
+      : selectedGitScope === "unstaged"
+        ? "Uncommitted"
+        : "Changes";
   const selectedCheckpointRange =
     typeof selectedCheckpointTurnCount === "number"
       ? {
@@ -336,6 +365,21 @@ export default function DiffPanel({
     },
     { enabled: isGitRepo && selectedTurn !== undefined },
   );
+  const liveTurnDiff = useEnvironmentQuery(
+    isGitRepo && liveTurnSelected && activeThread && activeThreadId
+      ? orchestrationEnvironment.turnDiff({
+          environmentId: activeThread.environmentId,
+          input: {
+            threadId: activeThreadId,
+            fromTurnCount: liveFromTurnCount,
+            toTurnCount: liveFromTurnCount + 1,
+            ignoreWhitespace: diffIgnoreWhitespace,
+            live: true,
+          },
+        })
+      : null,
+  );
+  const turnDiff = liveTurnSelected ? liveTurnDiff : activeCheckpointDiff;
   const branchDiffPreview = useEnvironmentQuery(
     canReadFiles && selectedRunId === null && activeThread && activeCwd
       ? reviewEnvironment.diffPreview({
@@ -363,16 +407,14 @@ export default function DiffPanel({
   const preview = branchDiffPreview.data;
   const gitDiff = selectedGitSource?.diff;
 
-  const selectedPatch = selectedTurn ? activeCheckpointDiff.data?.diff : gitDiff;
-  const isSelectedPatchTruncated = !selectedTurn && selectedGitSource?.truncated === true;
-  const isLoadingSelectedPatch = selectedTurn
-    ? activeCheckpointDiff.isPending
-    : branchDiffPreview.isPending;
-  const selectedPatchError = selectedTurn ? activeCheckpointDiff.error : branchDiffPreview.error;
+  const selectedPatch = isTurnSelection ? turnDiff.data?.diff : gitDiff;
+  const isSelectedPatchTruncated = !isTurnSelection && selectedGitSource?.truncated === true;
+  const isLoadingSelectedPatch = isTurnSelection ? turnDiff.isPending : branchDiffPreview.isPending;
+  const selectedPatchError = isTurnSelection ? turnDiff.error : branchDiffPreview.error;
   const hasResolvedPatch = typeof selectedPatch === "string";
   const hasNoNetChanges = hasResolvedPatch && selectedPatch.trim().length === 0;
   const lazySource =
-    !selectedTurn && selectedGitSource?.truncated && selectedGitSource.files
+    !isTurnSelection && selectedGitSource?.truncated && selectedGitSource.files
       ? selectedGitSource
       : null;
   const renderablePatch = getRenderablePatch(
@@ -382,7 +424,7 @@ export default function DiffPanel({
   );
   const fileStats = new Map(lazySource?.files?.map((file) => [file.path, file]));
   const sourceLineStat =
-    !selectedTurn && selectedGitSource?.files
+    !isTurnSelection && selectedGitSource?.files
       ? selectedGitSource.files.reduce(
           (total, file) => ({
             additions: total.additions + file.additions,
@@ -415,7 +457,8 @@ export default function DiffPanel({
     const newPath = resolveFileDiffPath(fileDiff);
     const oldPath = fileDiff.prevName ?? newPath;
     if (selectedRunId !== null) {
-      if (!activeThreadId || !selectedCheckpointRange) return null;
+      // Structural diffs read finished checkpoints, which a running turn does not have yet.
+      if (!activeThreadId || !selectedCheckpointRange || liveTurnSelected) return null;
       return {
         _tag: "turn",
         threadId: activeThreadId,
@@ -440,8 +483,8 @@ export default function DiffPanel({
       },
     };
   };
-  const difftasticCacheKey = selectedTurn
-    ? `turn:${selectedTurn.runId}`
+  const difftasticCacheKey = isTurnSelection
+    ? reviewSectionId
     : `git:${selectedGitSource?.diffHash ?? ""}`;
   const openDifftasticFileContextMenu: DifftasticFileContextMenuHandler = (filePath, event) => {
     event.preventDefault();
@@ -539,6 +582,12 @@ export default function DiffPanel({
     mutationId: workspaceMutationId,
     refresh: refreshBranchDiffPreview,
     resourceKey: `diff:${activeThreadRefreshKey ?? ""}`,
+  });
+  useWorkspaceMutationRefresh({
+    enabled: liveTurnSelected,
+    mutationId: workspaceMutationId,
+    refresh: liveTurnDiff.refresh,
+    resourceKey: `turn-live:${activeThreadRefreshKey ?? ""}:${liveRunId ?? ""}`,
   });
 
   const isRefreshingDiff = branchDiffPreview.isPending || areFilePatchesPending;
@@ -709,14 +758,15 @@ export default function DiffPanel({
   const selectedScopeValue =
     selectedRunId === null
       ? selectedGitScope
-      : selectedTurn?.runId === latestTurn?.runId
+      : liveTurnSelected || selectedTurn?.runId === latestTurn?.runId
         ? "latest"
         : selectedTurnValue;
   const selectScopeValue = (value: string) => {
     if (value === "unstaged" || value === "branch") {
       selectGitScope(value);
     } else if (value === "latest") {
-      if (latestTurn) selectTurn(latestTurn.runId);
+      const latestRunId = liveRunId ?? latestTurn?.runId;
+      if (latestRunId) selectTurn(latestRunId);
     } else {
       const turn = orderedTurnDiffSummaries.find((summary) => `turn:${summary.runId}` === value);
       if (turn) selectTurn(turn.runId);
@@ -896,7 +946,7 @@ export default function DiffPanel({
         )}
       </div>
       <div className="flex shrink-0 items-center gap-1 [-webkit-app-region:no-drag]">
-        {codeViewFiles.length > 0 || (!selectedTurn && selectedGitSource?.files?.length) ? (
+        {codeViewFiles.length > 0 || (!isTurnSelection && selectedGitSource?.files?.length) ? (
           <DiffStatLabel
             additions={diffLineStat.additions}
             deletions={diffLineStat.deletions}
@@ -1067,7 +1117,7 @@ export default function DiffPanel({
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
           Turn diffs are unavailable because this project is not a git repository.
         </div>
-      ) : selectedRunId !== null && orderedTurnDiffSummaries.length === 0 ? (
+      ) : selectedRunId !== null && !liveTurnSelected && orderedTurnDiffSummaries.length === 0 ? (
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
           No completed turns yet.
         </div>
@@ -1097,19 +1147,23 @@ export default function DiffPanel({
               isLoadingSelectedPatch ? (
                 <DiffPanelLoadingState
                   label={
-                    selectedTurn
-                      ? "Loading checkpoint diff..."
-                      : selectedGitScope === "unstaged"
-                        ? "Loading uncommitted changes..."
-                        : "Loading changes..."
+                    liveTurnSelected
+                      ? "Loading this turn's changes..."
+                      : selectedTurn
+                        ? "Loading checkpoint diff..."
+                        : selectedGitScope === "unstaged"
+                          ? "Loading uncommitted changes..."
+                          : "Loading changes..."
                   }
                 />
               ) : (
                 <div className="flex h-full items-center justify-center px-3 py-2 text-xs text-muted-foreground/70">
                   <p>
-                    {hasNoNetChanges
-                      ? "No net changes in this selection."
-                      : "No patch available for this selection."}
+                    {hasNoNetChanges && liveTurnSelected
+                      ? "No changes in this turn yet."
+                      : hasNoNetChanges
+                        ? "No net changes in this selection."
+                        : "No patch available for this selection."}
                   </p>
                 </div>
               )

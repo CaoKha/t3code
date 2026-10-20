@@ -49,6 +49,8 @@ function layerFor(input: {
   readonly projection: Effect.Effect<ProjectionCheckpointContext, OrchestratorProjectionError>;
   readonly diffCheckpoints?: CheckpointStore.CheckpointStore["Service"]["diffCheckpoints"];
   readonly authoredPaths?: ReadonlySet<string>;
+  readonly captureCheckpoint?: CheckpointStore.CheckpointStore["Service"]["captureCheckpoint"];
+  readonly deleteCheckpointRefs?: CheckpointStore.CheckpointStore["Service"]["deleteCheckpointRefs"];
 }) {
   return CheckpointDiffQuery.layer.pipe(
     Layer.provide(
@@ -59,6 +61,8 @@ function layerFor(input: {
         Layer.mock(CheckpointStore.CheckpointStore)({
           diffCheckpoints: input.diffCheckpoints ?? (() => Effect.succeed("diff")),
           listAuthoredPaths: () => Effect.succeed(input.authoredPaths ?? null),
+          captureCheckpoint: input.captureCheckpoint ?? (() => Effect.void),
+          deleteCheckpointRefs: input.deleteCheckpointRefs ?? (() => Effect.void),
         }),
       ),
     ),
@@ -92,6 +96,62 @@ it.effect("computes V2 run diffs from projected checkpoint scopes", () => {
       fallbackFromToHead: false,
       ignoreWhitespace: true,
     });
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("diffs a running turn against the workspace and drops the snapshot after", () => {
+  const events: Array<string> = [];
+  const captureCheckpoint = vi.fn((input: CheckpointStore.CaptureCheckpointInput) =>
+    Effect.sync(() => events.push(`capture ${input.checkpointRef}`)),
+  );
+  const diffCheckpoints = vi.fn((input: CheckpointStore.DiffCheckpointsInput) =>
+    Effect.sync(() => {
+      events.push(`diff ${input.toCheckpointRef}`);
+      return "diff --git a/live b/live";
+    }),
+  );
+  const deleteCheckpointRefs = vi.fn((input: CheckpointStore.DeleteCheckpointRefsInput) =>
+    Effect.sync(() => events.push(`delete ${input.checkpointRefs.join(",")}`)),
+  );
+  const projection = makeProjection();
+  const layer = layerFor({
+    projection: Effect.succeed({
+      ...projection,
+      runs: [
+        ...projection.runs,
+        { id: RunId.make("run:checkpoint-diff-v2:3"), ordinal: 3, status: "running" },
+      ],
+    }),
+    captureCheckpoint,
+    diffCheckpoints,
+    deleteCheckpointRefs,
+  });
+
+  return Effect.gen(function* () {
+    const query = yield* CheckpointDiffQuery.CheckpointDiffQuery;
+    const result = yield* query.getTurnDiff({
+      threadId,
+      fromTurnCount: 2,
+      toTurnCount: 3,
+      live: true,
+    });
+
+    assert.strictEqual(result.diff, "diff --git a/live b/live");
+    const snapshotRef = captureCheckpoint.mock.calls[0]?.[0].checkpointRef;
+    assert.isDefined(snapshotRef);
+    assert.notStrictEqual(snapshotRef, secondRef);
+    assert.deepEqual(diffCheckpoints.mock.calls[0]?.[0], {
+      cwd: "/repo",
+      fromCheckpointRef: secondRef,
+      toCheckpointRef: snapshotRef,
+      fallbackFromToHead: true,
+      ignoreWhitespace: true,
+    });
+    assert.deepEqual(events, [
+      `capture ${snapshotRef}`,
+      `diff ${snapshotRef}`,
+      `delete ${snapshotRef}`,
+    ]);
   }).pipe(Effect.provide(layer));
 });
 

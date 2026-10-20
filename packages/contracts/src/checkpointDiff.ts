@@ -30,6 +30,8 @@ export const OrchestrationGetTurnDiffInput = TurnCountRange.mapFields(
   Struct.assign({
     threadId: ThreadId,
     ignoreWhitespace: Schema.optionalKey(Schema.Boolean),
+    /** Compare against the workspace as it is now, for a turn still running. */
+    live: Schema.optionalKey(Schema.Boolean),
   }),
   { unsafePreserveChecks: true },
 );
