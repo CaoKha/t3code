@@ -20,14 +20,11 @@ export interface EnvironmentQueryView<A, E = unknown> {
 
 export function formatEnvironmentQueryError(cause: Cause.Cause<unknown>): string {
   const error = Cause.squash(cause);
-  const message =
-    error instanceof Error
-      ? error.message
-      : typeof error === "object" && error !== null && "message" in error
-        ? String(error.message)
-        : "";
-  // A server older than this client rejects RPC methods it does not know.
-  const unknownMethod = /Unknown request tag: (\S+)/.exec(`${message}\n${Cause.pretty(cause)}`);
+  const message = error instanceof Error ? error.message : "";
+  // A server older than this client answers RPC methods it does not know with a string defect.
+  const unknownMethod = /Unknown request tag: (\S+)/.exec(
+    typeof error === "string" ? error : message,
+  );
   if (unknownMethod) {
     return `This environment's T3 server does not support ${unknownMethod[1]}. Update it to a version that includes it.`;
   }
