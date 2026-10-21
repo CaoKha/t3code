@@ -64,24 +64,21 @@ export function resolveServerSelfUpdateCapability(input: {
 
 /** The respawn update directory, when this server opted in. Windows has no SIGTERM restart. */
 export const respawnUpdateDir = Effect.gen(function* () {
-  const dir = Option.filter(
-    Option.map(
-      yield* Config.String(SELF_UPDATE_DIR_ENV).pipe(
-        Config.option,
-        Effect.orElseSucceed(() => Option.none<string>()),
-      ),
-      (value) => value.trim(),
+  const dir = Option.getOrElse(
+    yield* Config.String(SELF_UPDATE_DIR_ENV).pipe(
+      Config.option,
+      Effect.orElseSucceed(() => Option.none<string>()),
     ),
-    (value) => value !== "",
-  );
-  if (Option.isNone(dir) || (yield* HostProcess.Platform) === "win32") return Option.none<string>();
-  if (!(yield* Path.Path).isAbsolute(dir.value)) {
+    () => "",
+  ).trim();
+  if (dir === "" || (yield* HostProcess.Platform) === "win32") return Option.none<string>();
+  if (!(yield* Path.Path).isAbsolute(dir)) {
     yield* Effect.logWarning(`${SELF_UPDATE_DIR_ENV} must be an absolute path; ignoring it.`, {
-      dir: dir.value,
+      dir,
     });
     return Option.none<string>();
   }
-  return dir;
+  return Option.some(dir);
 });
 
 export class ServerSelfUpdate extends Context.Service<
@@ -253,13 +250,11 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         platform,
         arch,
         releaseBaseUrl,
-        validate: (runtime) =>
-          runner
-            .run({
-              command: pinnedRuntimeCommand(runtime).command,
-              args: [...pinnedRuntimeCommand(runtime).args, "--version"],
-              timeout: PREFLIGHT_TIMEOUT,
-            })
+        validate: (runtime) => {
+          const { command, args } = pinnedRuntimeCommand(runtime);
+          // Prints `t3 v<version>`.
+          return runner
+            .run({ command, args: [...args, "--version"], timeout: PREFLIGHT_TIMEOUT })
             .pipe(
               Effect.mapError(
                 (cause) => new PinnedRuntimeInstallError({ step: "running the staged t3", cause }),
@@ -271,7 +266,8 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
                       new PinnedRuntimeInstallError({ step: "verifying the staged t3 version" }),
                     ),
               ),
-            ),
+            );
+        },
       }).pipe(
         Effect.mapError((error) => failWith(`Could not prepare t3@${targetVersion}.`, error)),
       );
@@ -285,7 +281,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
           const nextLink = path.join(dir, `.current-${targetVersion}`);
           yield* fs.remove(nextLink, { force: true });
           yield* fs.symlink(path.relative(dir, paths.versionDir), nextLink);
-          yield* fs.rename(nextLink, currentPath);
+          yield* fs
+            .rename(nextLink, currentPath)
+            .pipe(Effect.onError(() => fs.remove(nextLink, { force: true }).pipe(Effect.ignore)));
           yield* onHandoffAccepted();
           // Stop gracefully (SIGTERM runs the normal shutdown) once the reply is sent;
           // the supervisor restarts the server from `current`.

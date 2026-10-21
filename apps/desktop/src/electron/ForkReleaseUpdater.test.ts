@@ -4,238 +4,102 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { describe, expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vite-plus/test";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import { HttpClient, HttpClientResponse } from "effect/http";
+import * as Layer from "effect/Layer";
 
-import {
-  channelFileUrl,
-  describeConflict,
-  describeHttpStatus,
-  describeInstallBlocker,
-  describeUpstreamStatus,
-  ForkManifest,
-  INSTALL_SCRIPT,
-  isNewerVersion,
-  isSafeVersion,
-  isSha256,
-  parseShasumOutput,
-  resolveForkReleaseRepository,
-  selectUpdate,
-  UpstreamStatus,
-} from "./ForkReleaseUpdater.ts";
+import * as ElectronApp from "./ElectronApp.ts";
+import * as ElectronUpdater from "./ElectronUpdater.ts";
+import * as ForkReleaseUpdater from "./ForkReleaseUpdater.ts";
 
-const repository = "me/t3code";
-const hash = "a".repeat(64);
-const decodeManifest = Schema.decodeUnknownSync(ForkManifest);
-const decodeUpstreamStatus = Schema.decodeUnknownSync(UpstreamStatus);
+const isDarwin = HostProcess.Platform.defaultValue() === "darwin";
 
-const manifestJson = (version: string, overrides: Record<string, unknown> = {}) => ({
-  version,
-  tag: `v${version}`,
-  commit: "0123456789abcdef0123456789abcdef01234567",
-  assets: {
-    "darwin-arm64": {
-      name: `T3-Code-${version}-arm64.zip`,
-      url: `https://github.com/${repository}/releases/download/v${version}/T3-Code-${version}-arm64.zip`,
-      sha256: hash,
-    },
-    "linux-x64": {
-      name: `t3-${version}-linux-x64.tar.gz`,
-      url: `https://github.com/${repository}/releases/download/v${version}/t3-${version}-linux-x64.tar.gz`,
-      sha256: "b".repeat(64),
-    },
-    ...overrides,
-  },
-});
+const layerElectronApp = Layer.succeed(ElectronApp.ElectronApp, {
+  metadata: Effect.succeed({
+    appVersion: "1.0.0",
+    appPath: "/Applications/T3 Code.app/Contents/Resources/app.asar",
+    isPackaged: false,
+    resourcesPath: "/Applications/T3 Code.app/Contents/Resources",
+    runningUnderArm64Translation: false,
+  }),
+  name: Effect.succeed("T3 Code"),
+  systemLocale: Effect.succeed("en-US"),
+  whenReady: Effect.void,
+  requestSingleInstanceLock: Effect.succeed(true),
+  quit: Effect.void,
+  exit: () => Effect.void,
+  relaunch: () => Effect.void,
+  setPath: () => Effect.void,
+  setName: () => Effect.void,
+  setAboutPanelOptions: () => Effect.void,
+  setAppUserModelId: () => Effect.void,
+  getAppMetrics: Effect.succeed([]),
+  setAsDefaultProtocolClient: () => Effect.succeed(true),
+  setDesktopName: () => Effect.void,
+  setDockIcon: () => Effect.void,
+  appendCommandLineSwitch: () => Effect.void,
+  onBeforeQuitForUpdate: () => Effect.void,
+  removeCommandLineSwitch: () => Effect.void,
+  on: () => Effect.void,
+} satisfies ElectronApp.ElectronApp["Service"]);
 
-const select = (manifest: unknown, appVersion = "0.0.46-nightly.20261015.10009") =>
-  selectUpdate(decodeManifest(manifest), {
-    repository,
-    appVersion,
-    platformKey: "darwin-arm64",
-  });
+const assetUrl = "https://github.com/me/t3code/releases/download/v99.0.0/T3-Code.zip";
+const layerReleases = Layer.succeed(
+  HttpClient.HttpClient,
+  HttpClient.make((request) =>
+    Effect.succeed(
+      HttpClientResponse.fromWeb(
+        request,
+        request.url.endsWith("/channel/latest.json")
+          ? Response.json({
+              version: "99.0.0",
+              tag: "v99.0.0",
+              commit: "0123456789abcdef0123456789abcdef01234567",
+              assets: {
+                "darwin-arm64": { name: "T3-Code.zip", url: assetUrl, sha256: "0".repeat(64) },
+              },
+            })
+          : request.url === assetUrl
+            ? new Response("not the published zip")
+            : new Response(null, { status: 404 }),
+      ),
+    ),
+  ),
+);
 
-describe("isNewerVersion", () => {
-  it("orders fork nightlies by date, then run", () => {
-    expect(isNewerVersion("0.0.46-nightly.20261016.10010", "0.0.46-nightly.20261015.10009")).toBe(
-      true,
-    );
-    expect(isNewerVersion("0.0.46-nightly.20261015.10009", "0.0.46-nightly.20261016.10010")).toBe(
-      false,
-    );
-    expect(isNewerVersion("0.0.46-nightly.20261015.10010", "0.0.46-nightly.20261015.10009")).toBe(
-      true,
-    );
-  });
+describe.runIf(isDarwin)("ForkReleaseUpdater download", () => {
+  it.effect("rejects a download that does not match its SHA-256 and removes it", () => {
+    const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-fork-download-"));
+    return Effect.gen(function* () {
+      const updater = yield* ElectronUpdater.ElectronUpdater;
+      yield* updater.checkForUpdates;
+      const exit = yield* Effect.exit(updater.downloadUpdate);
 
-  it("orders a fork nightly after the upstream nightly it builds on", () => {
-    expect(isNewerVersion("0.0.46-nightly.20261015.10009", "0.0.46-nightly.20261015.3158")).toBe(
-      true,
-    );
-    expect(isNewerVersion("0.0.46-nightly.20261015.3158", "0.0.46-nightly.20261015.10009")).toBe(
-      false,
-    );
-  });
-
-  it("treats the same version as not newer", () => {
-    expect(isNewerVersion("0.0.46-nightly.20261015.10009", "0.0.46-nightly.20261015.10009")).toBe(
-      false,
-    );
-  });
-});
-
-describe("selectUpdate", () => {
-  it("offers a newer build for this platform", () => {
-    const selection = select(manifestJson("0.0.46-nightly.20261016.10010"));
-    expect(selection._tag).toBe("UpdateAvailable");
-    if (selection._tag !== "UpdateAvailable") return;
-    expect(selection.update.version).toBe("0.0.46-nightly.20261016.10010");
-    expect(selection.update.asset.name).toBe("T3-Code-0.0.46-nightly.20261016.10010-arm64.zip");
-    expect(selection.update.asset.sha256).toBe(hash);
-  });
-
-  it("is up to date when latest.json is not newer", () => {
-    expect(select(manifestJson("0.0.46-nightly.20261015.10009"))._tag).toBe("UpToDate");
-    expect(select(manifestJson("0.0.46-nightly.20261014.10001"))._tag).toBe("UpToDate");
-  });
-
-  it("rejects versions that are unsafe as paths", () => {
-    for (const version of ["../../evil", "1.0.0/../x", "..", "not-a-version"]) {
-      expect(select(manifestJson(version))._tag).toBe("Invalid");
-    }
-  });
-
-  it("rejects a newer build without a valid asset for this platform", () => {
-    const version = "0.0.46-nightly.20261016.10010";
-    const asset = manifestJson(version).assets["darwin-arm64"];
-    const { "darwin-arm64": _darwin, ...withoutDarwin } = manifestJson(version).assets;
-    expect(select({ ...manifestJson(version), assets: withoutDarwin })._tag).toBe("Invalid");
-    for (const broken of [
-      { ...asset, sha256: "not-a-hash" },
-      { ...asset, name: "../T3.zip" },
-      { ...asset, url: "https://evil.test/T3.zip" },
-    ]) {
-      expect(select(manifestJson(version, { "darwin-arm64": broken }))._tag).toBe("Invalid");
-    }
-  });
-
-  it("fails to decode a manifest without assets", () => {
-    expect(() => decodeManifest({ version: "1.0.0", tag: "v1.0.0" })).toThrow();
-  });
-});
-
-describe("validation helpers", () => {
-  it("accepts only SHA-256 hex digests", () => {
-    expect(isSha256(hash)).toBe(true);
-    expect(isSha256("A".repeat(64))).toBe(true);
-    expect(isSha256("a".repeat(63))).toBe(false);
-    expect(isSha256("g".repeat(64))).toBe(false);
-  });
-
-  it("reads shasum output", () => {
-    expect(parseShasumOutput(`${hash}  /tmp/T3.zip\n`)).toBe(hash);
-    expect(parseShasumOutput("")).toBeNull();
-    expect(parseShasumOutput("shasum: /tmp/T3.zip: No such file or directory")).toBeNull();
-  });
-
-  it("accepts fork versions as directory names", () => {
-    expect(isSafeVersion("0.0.46-nightly.20261015.10009")).toBe(true);
-    expect(isSafeVersion(".hidden")).toBe(false);
-  });
-
-  it("names the channel download URL", () => {
-    expect(channelFileUrl(repository, "latest.json")).toBe(
-      "https://github.com/me/t3code/releases/download/channel/latest.json",
-    );
-  });
-
-  it("explains missing files and rate limits", () => {
-    expect(describeHttpStatus("u", 404)).toContain("not found");
-    expect(describeHttpStatus("u", 429)).toContain("rate limiting");
-    expect(describeHttpStatus("u", 500)).toContain("HTTP 500");
-  });
-});
-
-describe("describeUpstreamStatus", () => {
-  const status = (value: unknown) =>
-    describeUpstreamStatus(repository, decodeUpstreamStatus(value));
-
-  it("reports a conflict with its files and the merge command", () => {
-    const message = Option.getOrThrow(
-      status({ status: "conflict", tag: "v1-nightly.1.1", files: ["a.ts"] }),
-    );
-    expect(message).toBe(describeConflict(repository, "v1-nightly.1.1", ["a.ts"]));
-    expect(message).toContain("a.ts");
-    expect(message).toContain("git merge v1-nightly.1.1");
-  });
-
-  it("reports new upstream workflows as needing review", () => {
-    const message = Option.getOrThrow(
-      status({
-        status: "needs-review",
-        tag: "v1-nightly.1.1",
-        files: [".github/workflows/new.yml"],
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(String(exit)).toContain("does not match its SHA-256");
+      expect(NodeFS.readdirSync(NodePath.join(home, "runtime", "fork-updates"))).toEqual([]);
+    }).pipe(
+      Effect.provide(
+        ForkReleaseUpdater.layer.pipe(
+          Layer.provide(Layer.mergeAll(layerElectronApp, layerReleases, NodeServices.layer)),
+        ),
+      ),
+      Effect.provideService(HostProcess.Platform, "darwin"),
+      Effect.provideService(HostProcess.Architecture, "arm64"),
+      Effect.provideService(HostProcess.Environment, {
+        T3CODE_FORK_RELEASE_REPOSITORY: "me/t3code",
+        T3CODE_HOME: home,
       }),
+      Effect.ensuring(Effect.sync(() => NodeFS.rmSync(home, { recursive: true, force: true }))),
     );
-    expect(message).toContain("Needs review");
-    expect(message).toContain(".github/workflows/new.yml");
-    expect(message).toContain("git merge v1-nightly.1.1");
-  });
-
-  it("reports a failed push", () => {
-    const message = Option.getOrThrow(
-      status({ status: "push-failed", tag: "v1-nightly.1.1", detail: "denied" }),
-    );
-    expect(message).toContain("could not be pushed");
-    expect(message).toContain("denied");
-  });
-
-  it("says nothing when in sync or unknown", () => {
-    expect(Option.isNone(status({ status: "in-sync", tag: "v1" }))).toBe(true);
-    expect(Option.isNone(status({ status: "something-new", tag: "v1" }))).toBe(true);
   });
 });
 
-describe("resolveForkReleaseRepository", () => {
-  const resolve = (options: Partial<Parameters<typeof resolveForkReleaseRepository>[0]>) =>
-    resolveForkReleaseRepository({
-      platform: "darwin",
-      isPackaged: true,
-      runtimeOverride: undefined,
-      buildTime: "me/t3code",
-      ...options,
-    });
-
-  it("uses only the baked-in repository in packaged apps", () => {
-    expect(resolve({ runtimeOverride: "other/repo" })).toEqual(Option.some("me/t3code"));
-  });
-
-  it("lets unpackaged runs override it", () => {
-    expect(resolve({ isPackaged: false, runtimeOverride: "other/repo" })).toEqual(
-      Option.some("other/repo"),
-    );
-  });
-
-  it("is off without a valid repository or outside macOS", () => {
-    expect(Option.isNone(resolve({ buildTime: "" }))).toBe(true);
-    expect(Option.isNone(resolve({ buildTime: "not a repo" }))).toBe(true);
-    expect(Option.isNone(resolve({ platform: "linux" }))).toBe(true);
-  });
-});
-
-describe("describeInstallBlocker", () => {
-  it("refuses translocated and unknown bundles", () => {
-    expect(describeInstallBlocker("/Applications/T3 Code (Nightly).app")).toBeNull();
-    expect(
-      describeInstallBlocker("/private/var/folders/x/AppTranslocation/ABC/d/T3 Code.app"),
-    ).toContain("App Translocation");
-    expect(describeInstallBlocker("/usr/local/bin")).toContain("Could not locate");
-  });
-});
-
-describe.runIf(HostProcess.Platform.defaultValue() === "darwin")("INSTALL_SCRIPT", () => {
+describe.runIf(isDarwin)("INSTALL_SCRIPT", () => {
   it("swaps the bundle once its parent process exits and removes the download", () => {
     const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-fork-install-"));
     try {
@@ -253,7 +117,7 @@ describe.runIf(HostProcess.Platform.defaultValue() === "darwin")("INSTALL_SCRIPT
       NodeChildProcess.execFileSync("/bin/bash", [
         "-c",
         'bash -c "$0" t3-fork-install "$1" "$2" 0 "$3"; exit',
-        INSTALL_SCRIPT,
+        ForkReleaseUpdater.INSTALL_SCRIPT,
         staged,
         bundle,
         versionDir,
