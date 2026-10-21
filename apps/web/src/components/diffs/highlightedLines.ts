@@ -23,6 +23,19 @@ export function createAddButtonHighlight() {
     prefer<Range extends SelectedLineRange | null>(range: Range): SelectedLineRange | Range {
       return lines ?? range;
     },
+    /** The viewer callback, handed the highlighted lines in place of the one line pressed. */
+    reportTo<Callback extends (range: never, context: never) => void>(
+      callback: Callback,
+    ): Callback {
+      // The viewer's callbacks are overloaded for file and diff items; both take the range first
+      // and the item after it, which is all this passes through.
+      const call = callback as unknown as (
+        range: SelectedLineRange | null,
+        context: unknown,
+      ) => void;
+      return ((range: SelectedLineRange | null, context: unknown) =>
+        call(lines ?? range, context)) as unknown as Callback;
+    },
   };
 }
 

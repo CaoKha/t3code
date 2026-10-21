@@ -24,13 +24,11 @@ export function keepRecentThreadViews(
 ): ReadonlyArray<KeptThreadView> {
   if (shown === null) return previous;
   const existing = previous.find((view) => view.threadKey === shown.threadKey);
-  if (existing !== undefined && existing === previous[0] && sameView(existing, shown)) {
-    return previous;
-  }
   const head =
     existing && sameView(existing, shown)
       ? existing
       : { ...shown, key: existing?.key ?? shown.key };
+  if (head === previous[0]) return previous;
   return [head, ...previous.filter((view) => view !== existing)].slice(0, capacity);
 }
 

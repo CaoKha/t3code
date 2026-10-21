@@ -93,15 +93,11 @@ interface RightPanelSurfaceContentProps {
  */
 export function RightPanelSurfaceContent(props: RightPanelSurfaceContentProps) {
   const { surface } = props;
-  const threadKey = scopedThreadKey(props.threadRef);
-  const [kept, setKept] = useState<{
-    readonly threadKey: string;
-    readonly surfaces: ReadonlyArray<KeptSurface>;
-  }>({ threadKey, surfaces: [] });
-  const previous = kept.threadKey === threadKey ? kept.surfaces : [];
-  const keptSurfaces = keepRecentSurfaces(previous, surface, props.surfaces, KEPT_SURFACE_CAPACITY);
-  if (kept.threadKey !== threadKey || keptSurfaces !== kept.surfaces) {
-    setKept({ threadKey, surfaces: keptSurfaces });
+  // Each thread has its own ChatView, so this never sees another thread's surfaces.
+  const [kept, setKept] = useState<ReadonlyArray<KeptSurface>>([]);
+  const keptSurfaces = keepRecentSurfaces(kept, surface, props.surfaces, KEPT_SURFACE_CAPACITY);
+  if (keptSurfaces !== kept) {
+    setKept(keptSurfaces);
   }
 
   const activeSlot = surface === null ? null : keptSurfaceSlot(surface);

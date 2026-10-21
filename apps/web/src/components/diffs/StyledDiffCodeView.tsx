@@ -7,7 +7,7 @@ import {
   type UncontrolledCodeViewProps,
 } from "@pierre/diffs/react";
 /* oxlint-enable eslint/no-restricted-imports */
-import type { CodeViewLineSelection, SelectedLineRange } from "@pierre/diffs";
+import type { CodeViewLineSelection } from "@pierre/diffs";
 import { type Ref, useState } from "react";
 
 import { DIFF_SURFACE_THEME_UNSAFE_CSS } from "~/lib/diffRendering";
@@ -254,18 +254,12 @@ export function StyledDiffCodeView<LAnnotation = undefined>({
             ...options,
             ...(options?.onGutterUtilityClick
               ? {
-                  onGutterUtilityClick: withHighlightedLines(
-                    options.onGutterUtilityClick,
-                    highlight.prefer,
-                  ),
+                  onGutterUtilityClick: highlight.reportTo(options.onGutterUtilityClick),
                 }
               : {}),
             ...(options?.onLineSelectionEnd
               ? {
-                  onLineSelectionEnd: withHighlightedLines(
-                    options.onLineSelectionEnd,
-                    highlight.prefer,
-                  ),
+                  onLineSelectionEnd: highlight.reportTo(options.onLineSelectionEnd),
                 }
               : {}),
             unsafeCSS: unsafeCSSExtra
@@ -292,16 +286,4 @@ export function StyledDiffCodeView<LAnnotation = undefined>({
       </div>
     </DiffWorkerPoolProvider>
   );
-}
-
-/** Reports the highlighted lines in place of the one line a press of the add button names. */
-function withHighlightedLines<Callback extends (range: never, context: never) => void>(
-  callback: Callback,
-  preferHighlighted: (range: SelectedLineRange | null) => SelectedLineRange | null,
-): Callback {
-  // The callbacks are overloaded for file and diff items; both take the range first and the
-  // item after it, which is all this passes through.
-  const call = callback as unknown as (range: SelectedLineRange | null, context: unknown) => void;
-  return ((range: SelectedLineRange | null, context: unknown) =>
-    call(preferHighlighted(range), context)) as unknown as Callback;
 }
