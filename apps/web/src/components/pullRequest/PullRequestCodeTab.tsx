@@ -295,7 +295,7 @@ function PullRequestCodeTab({
   detail,
   selectedCommitOid,
   onSelectedCommitChange,
-  commitsLoaded,
+  commitsSettled,
   pendingFinding,
   fixFindingLabel = "Fix in a thread",
   onFixFinding,
@@ -312,8 +312,11 @@ function PullRequestCodeTab({
   detail: PullRequestDetailView;
   selectedCommitOid: string | null;
   onSelectedCommitChange: (oid: string | null) => void;
-  /** False until the change's commit list has loaded; an empty list then means none yet known. */
-  commitsLoaded: boolean;
+  /**
+   * False while the change's commit list is loading, when an empty list means "not known yet"
+   * rather than "no commits". True once it has loaded or failed.
+   */
+  commitsSettled: boolean;
   pendingFinding?: string | null;
   fixFindingLabel?: string;
   onFixFinding?: (finding: PullRequestFinding) => void;
@@ -378,8 +381,12 @@ function PullRequestCodeTab({
   // Kept against the pull request it was asked for, so moving to another one starts in the
   // default order instead of writing a guide nobody asked for there.
   const [guideOrderKey, setGuideOrderKey] = useState<string | null>(null);
-  const guideOrdered = guideOrder !== undefined && guideOrderKey === referenceKey;
-  const orderingGuide = guideOrdered ? guideOrder.guide : null;
+  const guideOrderRequested = guideOrder !== undefined && guideOrderKey === referenceKey;
+  const orderingGuide = guideOrderRequested ? guideOrder.guide : null;
+  // Pressing it with no guide yet writes one; the files follow it once it lands. A write that
+  // ends without a guide leaves the toggle off, so it never claims an order that isn't applied.
+  const guideOrderWriting = guideOrderRequested && guideOrder.guide === null && guideOrder.running;
+  const guideOrdered = orderingGuide !== null || guideOrderWriting;
   const commit = selectedCommitOid;
   const scopeKey = JSON.stringify([environmentId, referenceKey, commit]);
   // The panel keeps this mounted across pull requests, so an open composer would otherwise
@@ -1077,12 +1084,6 @@ function PullRequestCodeTab({
     </div>
   );
 
-  // A rebase or a force-push can take the scoped commit out of the change. Its diff may still
-  // be reachable on the host, but it is no longer part of what is being reviewed, so the scope
-  // goes back to the whole change rather than sitting under a name nothing matches.
-  // Including when the change reports no commits at all: the scope dropdown is the only way back
-  // to the whole diff and it is not drawn without commits to list, so a scope that outlived them
-  // would leave the tab reading one obsolete commit with nothing to press.
   const selectedCommit = orderedCommits.find((entry) => entry.oid === commit);
   const scopeLabel = selectedCommit ? selectedCommit.messageHeadline : "All commits";
   const changeIgnoreWhitespace = (next: boolean) => {
@@ -1090,8 +1091,6 @@ function PullRequestCodeTab({
     setDraft(null);
     setSelectedLines(null);
   };
-  // Pressing it with no guide yet writes one; the files follow it once it lands.
-  const guideOrderWriting = guideOrdered && guideOrder.guide === null && guideOrder.running;
   const guideOrderLabel = guideOrderWriting
     ? "Writing the review guide to order files..."
     : guideOrdered
@@ -1476,11 +1475,17 @@ function PullRequestCodeTab({
     answerReveal();
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Re-checked as pages load until the requested file arrives.
   }, [canLoadNextSlice, items, revealRequest]);
+  // A rebase or a force-push can take the scoped commit out of the change. Its diff may still
+  // be reachable on the host, but it is no longer part of what is being reviewed, so the scope
+  // goes back to the whole change rather than sitting under a name nothing matches.
+  // Including when the change reports no commits at all: the scope dropdown is the only way back
+  // to the whole diff and it is not drawn without commits to list, so a scope that outlived them
+  // would leave the tab reading one obsolete commit with nothing to press.
   useEffect(() => {
-    if (commitsLoaded && commit !== null && selectedCommit === undefined) {
+    if (commitsSettled && commit !== null && selectedCommit === undefined) {
       onSelectedCommitChange(null);
     }
-  }, [commit, commitsLoaded, onSelectedCommitChange, selectedCommit]);
+  }, [commit, commitsSettled, onSelectedCommitChange, selectedCommit]);
   const withToolbar = (body: ReactNode) => (
     <div className="flex h-full min-h-0 flex-col">
       {toolbar}

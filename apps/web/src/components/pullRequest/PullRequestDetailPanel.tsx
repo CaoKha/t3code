@@ -247,11 +247,12 @@ const TABS: ReadonlyArray<{ value: PullRequestDetailTab; label: string }> = [
  * The commit each pull request's Code tab was scoped to. Switching the right panel to another
  * surface unmounts the panel, and coming back should not drop the reader back to every commit.
  */
-const commitScopes = new Map<string, string | null>();
+const commitScopes = new Map<string, string>();
 const COMMIT_SCOPE_CAPACITY = 32;
 
 function rememberCommitScope(key: string, oid: string | null) {
   commitScopes.delete(key);
+  if (oid === null) return;
   if (commitScopes.size >= COMMIT_SCOPE_CAPACITY) {
     const oldest = commitScopes.keys().next().value;
     if (oldest !== undefined) commitScopes.delete(oldest);
@@ -669,13 +670,17 @@ export function PullRequestDetailPanel({
   };
   const [timelineOrder, setTimelineOrder] = useState<"newest" | "oldest">("newest");
   const [codeCommitScope, setCodeCommitScope] = useState<{
-    readonly pullRequestKey: string;
+    readonly key: string;
     readonly oid: string | null;
-  }>(() => ({ pullRequestKey, oid: commitScopes.get(tabScopeKey) ?? null }));
+  }>(() => ({ key: tabScopeKey, oid: commitScopes.get(tabScopeKey) ?? null }));
+  // The panel stays mounted across pull requests, so one it moves to restores its own scope.
   const selectedCodeCommitOid =
-    codeCommitScope.pullRequestKey === pullRequestKey ? codeCommitScope.oid : null;
+    codeCommitScope.key === tabScopeKey
+      ? codeCommitScope.oid
+      : (commitScopes.get(tabScopeKey) ?? null);
   const selectCodeCommit = (oid: string | null) => {
-    setCodeCommitScope({ pullRequestKey, oid });
+    setCodeCommitScope({ key: tabScopeKey, oid });
+    rememberCommitScope(tabScopeKey, oid);
   };
   const openCommit = (oid: string) => {
     selectCodeCommit(oid);
@@ -700,9 +705,6 @@ export function PullRequestDetailPanel({
     useGuideRunStore.getState().requestOpen(null);
     onTabChange?.("guide");
   }, [guideOpenRequested, onTabChange]);
-  useEffect(() => {
-    rememberCommitScope(tabScopeKey, selectedCodeCommitOid);
-  }, [selectedCodeCommitOid, tabScopeKey]);
   const [tabMountState, setTabMountState] = useState(() => ({
     key: tabScopeKey,
     tabs: new Set<PullRequestDetailTab>([tab]),
@@ -2912,7 +2914,7 @@ export function PullRequestDetailPanel({
                     detail={detail}
                     selectedCommitOid={selectedCodeCommitOid}
                     onSelectedCommitChange={selectCodeCommit}
-                    commitsLoaded={activity !== null}
+                    commitsSettled={activity !== null || activityError !== null}
                     pendingFinding={handoff}
                     fixFindingLabel={handoffLabels.fixFinding}
                     {...(canFixFindings ? { onFixFinding: startFixFinding } : {})}
