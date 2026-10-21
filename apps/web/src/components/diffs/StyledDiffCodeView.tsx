@@ -7,10 +7,12 @@ import {
   type UncontrolledCodeViewProps,
 } from "@pierre/diffs/react";
 /* oxlint-enable eslint/no-restricted-imports */
-import type { Ref } from "react";
+import type { CodeViewLineSelection, SelectedLineRange } from "@pierre/diffs";
+import { type Ref, useState } from "react";
 
 import { DIFF_SURFACE_THEME_UNSAFE_CSS } from "~/lib/diffRendering";
 import { DiffWorkerPoolProvider } from "../DiffWorkerPoolProvider";
+import { createAddButtonHighlight } from "./highlightedLines";
 
 export const DIFF_VIEW_UNSAFE_CSS = `${DIFF_SURFACE_THEME_UNSAFE_CSS}
 /* A 1fr track's automatic minimum grows with the currently mounted lines. In split
@@ -224,39 +226,82 @@ export function StyledDiffCodeView<LAnnotation = undefined>({
   unsafeCSSExtra,
   ...props
 }: StyledDiffCodeViewProps<LAnnotation>) {
+  const [highlight] = useState(createAddButtonHighlight);
+  const { onSelectedLinesChange } = props;
   return (
     <DiffWorkerPoolProvider>
-      <CodeView<LAnnotation>
-        {...props}
-        {...(viewerRef ? { ref: viewerRef } : {})}
-        className={
-          className
-            ? `diff-render-surface [--code-background:var(--background)] outline-none ${className}`
-            : "diff-render-surface [--code-background:var(--background)] outline-none"
-        }
-        options={{
-          ...options,
-          unsafeCSS: unsafeCSSExtra
-            ? `${DIFF_VIEW_UNSAFE_CSS}\n${unsafeCSSExtra}`
-            : DIFF_VIEW_UNSAFE_CSS,
-          itemMetrics: {
-            diffHeaderHeight: 32,
-            hunkSeparatorHeight: 24,
-            // Pierre uses its general file spacing as a fallback in expanded-file layout paths.
-            // Keep it zero alongside the explicit paddingTop or expanding the first file can
-            // reintroduce the library's default 8px gap above its header.
-            spacing: 0,
-            paddingTop: 0,
-            // Unlike the gap above, the 8px under a file's last line is painted
-            // unconditionally by Pierre's stylesheet (`--diffs-gap-fallback`), so the metric has
-            // to count it: at zero every expanded file's virtual height ran 8px short of its
-            // rendered height, and the end of the list sat past the reachable scroll range —
-            // one clipped file row per expanded file above it.
-            paddingBottom: 8,
-          },
-          layout: { paddingTop: 0, paddingBottom: 0, gap: 0 },
-        }}
-      />
+      <div
+        className="contents"
+        onPointerDownCapture={(event) => highlight.press(event.nativeEvent)}
+      >
+        <CodeView<LAnnotation>
+          {...props}
+          {...(viewerRef ? { ref: viewerRef } : {})}
+          {...(onSelectedLinesChange
+            ? {
+                onSelectedLinesChange: (selection: CodeViewLineSelection | null) =>
+                  onSelectedLinesChange(
+                    selection && { ...selection, range: highlight.prefer(selection.range) },
+                  ),
+              }
+            : {})}
+          className={
+            className
+              ? `diff-render-surface [--code-background:var(--background)] outline-none ${className}`
+              : "diff-render-surface [--code-background:var(--background)] outline-none"
+          }
+          options={{
+            ...options,
+            ...(options?.onGutterUtilityClick
+              ? {
+                  onGutterUtilityClick: withHighlightedLines(
+                    options.onGutterUtilityClick,
+                    highlight.prefer,
+                  ),
+                }
+              : {}),
+            ...(options?.onLineSelectionEnd
+              ? {
+                  onLineSelectionEnd: withHighlightedLines(
+                    options.onLineSelectionEnd,
+                    highlight.prefer,
+                  ),
+                }
+              : {}),
+            unsafeCSS: unsafeCSSExtra
+              ? `${DIFF_VIEW_UNSAFE_CSS}\n${unsafeCSSExtra}`
+              : DIFF_VIEW_UNSAFE_CSS,
+            itemMetrics: {
+              diffHeaderHeight: 32,
+              hunkSeparatorHeight: 24,
+              // Pierre uses its general file spacing as a fallback in expanded-file layout paths.
+              // Keep it zero alongside the explicit paddingTop or expanding the first file can
+              // reintroduce the library's default 8px gap above its header.
+              spacing: 0,
+              paddingTop: 0,
+              // Unlike the gap above, the 8px under a file's last line is painted
+              // unconditionally by Pierre's stylesheet (`--diffs-gap-fallback`), so the metric has
+              // to count it: at zero every expanded file's virtual height ran 8px short of its
+              // rendered height, and the end of the list sat past the reachable scroll range —
+              // one clipped file row per expanded file above it.
+              paddingBottom: 8,
+            },
+            layout: { paddingTop: 0, paddingBottom: 0, gap: 0 },
+          }}
+        />
+      </div>
     </DiffWorkerPoolProvider>
   );
+}
+
+/** Reports the highlighted lines in place of the one line a press of the add button names. */
+function withHighlightedLines<Callback extends (range: never, context: never) => void>(
+  callback: Callback,
+  preferHighlighted: (range: SelectedLineRange | null) => SelectedLineRange | null,
+): Callback {
+  // The callbacks are overloaded for file and diff items; both take the range first and the
+  // item after it, which is all this passes through.
+  const call = callback as unknown as (range: SelectedLineRange | null, context: unknown) => void;
+  return ((range: SelectedLineRange | null, context: unknown) =>
+    call(preferHighlighted(range), context)) as unknown as Callback;
 }
