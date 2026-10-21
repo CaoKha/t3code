@@ -1719,17 +1719,8 @@ code {
   font-size: var(--font-size-code, inherit);
 }
 
-/* The difftastic diff view renders plain DOM, so it repeats the code surface and
-   the row tints DIFF_SURFACE_THEME_UNSAFE_CSS gives the standard (@pierre/diffs) view. */
-.difftastic-surface {
-  background-color: var(--code-background);
-  color: var(--code-foreground);
-}
-
-.difftastic-code {
-  font-size: var(--font-size-code, inherit);
-}
-
+/* The difftastic diff view renders plain DOM, so it repeats the row tints
+   DIFF_SURFACE_THEME_UNSAFE_CSS gives the standard (@pierre/diffs) view. */
 .difftastic-surface [data-dt-line="addition"] {
   --dt-tint: var(--diff-addition);
 }

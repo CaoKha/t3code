@@ -128,6 +128,15 @@ describe("buildDifftasticRows", () => {
     expect(buildDifftasticRows(result({}), new Set())).toEqual([]);
   });
 
+  it("returns no rows when aligned lines hold no changes", () => {
+    const formattingOnly = result({
+      oldContents: twenty,
+      newContents: twenty,
+      alignedLines: Array.from({ length: 20 }, (_, index) => [index, index] as const),
+    });
+    expect(buildDifftasticRows(formattingOnly, new Set())).toEqual([]);
+  });
+
   it("clamps context at the first and last lines", () => {
     const aligned = Array.from({ length: 20 }, (_, index) => [index, index] as const);
     const change = [{ start: 0, end: 1 }];

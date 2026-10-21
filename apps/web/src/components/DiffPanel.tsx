@@ -297,13 +297,17 @@ export default function DiffPanel({
       );
   }, [diffSelection, liveRunId, orderedTurnDiffSummaries, routeThreadRef]);
 
-  // "Latest turn" follows a new turn as soon as it starts, not once it has finished.
+  // "Latest turn" follows a new turn as soon as it starts, not once it has finished. Only the
+  // start moves the selection, so the previous turn can still be picked while this one runs.
+  const latestRunId = latestTurn?.runId ?? null;
   useEffect(() => {
-    if (!routeThreadRef || liveRunId === null || diffSelection.kind !== "turn") return;
-    if (diffSelection.turnId === liveRunId) return;
-    if (latestTurn !== undefined && diffSelection.turnId !== latestTurn.runId) return;
-    useDiffPanelStore.getState().selectTurn(routeThreadRef, liveRunId);
-  }, [diffSelection, latestTurn, liveRunId, routeThreadRef]);
+    if (!routeThreadRef || liveRunId === null) return;
+    const store = useDiffPanelStore.getState();
+    const selection = selectThreadDiffPanelSelection(store.byThreadKey, routeThreadRef);
+    if (selection.kind !== "turn" || selection.turnId === liveRunId) return;
+    if (latestRunId !== null && selection.turnId !== latestRunId) return;
+    store.selectTurn(routeThreadRef, liveRunId);
+  }, [latestRunId, liveRunId, routeThreadRef]);
 
   const selectedRunId = diffSelection.kind === "turn" ? diffSelection.turnId : null;
   const liveTurnSelected = liveRunId !== null && selectedRunId === liveRunId;
@@ -320,12 +324,15 @@ export default function DiffPanel({
   const selectedCheckpointTurnCount = selectedTurn?.checkpointTurnCount;
   const isTurnSelection = selectedTurn !== undefined || liveTurnSelected;
   const liveFromTurnCount = latestTurn?.checkpointTurnCount ?? 0;
+  // While a turn runs, it is the latest one; the last finished turn is just a turn.
+  const latestTurnSelected =
+    liveRunId === null ? selectedTurn?.runId === latestTurn?.runId : liveTurnSelected;
   const selectedScopeLabel =
     selectedRunId === null
       ? selectedGitScope === "unstaged"
         ? "Uncommitted"
         : "Changes"
-      : liveTurnSelected || selectedTurn?.runId === latestTurn?.runId
+      : latestTurnSelected
         ? "Latest turn"
         : `Turn ${selectedCheckpointTurnCount ?? "?"}`;
   const reviewSectionId = liveTurnSelected
@@ -455,8 +462,8 @@ export default function DiffPanel({
     const newPath = resolveFileDiffPath(fileDiff);
     const oldPath = fileDiff.prevName ?? newPath;
     if (selectedRunId !== null) {
-      // Structural diffs read finished checkpoints, which a running turn does not have yet.
-      if (!activeThreadId || !selectedCheckpointRange || liveTurnSelected) return null;
+      // Structural diffs read finished checkpoints, so a running turn has no range yet.
+      if (!activeThreadId || !selectedCheckpointRange) return null;
       return {
         _tag: "turn",
         threadId: activeThreadId,
@@ -766,11 +773,7 @@ export default function DiffPanel({
   };
   const selectedTurnValue = selectedTurn ? `turn:${selectedTurn.runId}` : "";
   const selectedScopeValue =
-    selectedRunId === null
-      ? selectedGitScope
-      : liveTurnSelected || selectedTurn?.runId === latestTurn?.runId
-        ? "latest"
-        : selectedTurnValue;
+    selectedRunId === null ? selectedGitScope : latestTurnSelected ? "latest" : selectedTurnValue;
   const selectScopeValue = (value: string) => {
     if (value === "unstaged" || value === "branch") {
       selectGitScope(value);

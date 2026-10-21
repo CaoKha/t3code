@@ -83,7 +83,8 @@ function alignDifftasticRows(result: ReviewStructuralDiffResult): Array<Difftast
 
 /**
  * Turns difftastic's alignment into display rows: changed rows plus surrounding
- * context, with runs of unchanged rows folded into gaps unless expanded.
+ * context, with runs of unchanged rows folded into gaps unless expanded. Empty
+ * when no row changed.
  */
 export function buildDifftasticRows(
   result: ReviewStructuralDiffResult,
@@ -98,6 +99,8 @@ export function buildDifftasticRows(
     const to = Math.min(aligned.length - 1, index + contextLines);
     for (let cursor = from; cursor <= to; cursor += 1) visible[cursor] = true;
   });
+  // Without a changed row there is nothing to show, even if the result says "changed".
+  if (!visible.includes(true)) return [];
 
   const rows: Array<DifftasticRow> = [];
   let index = 0;

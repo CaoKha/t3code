@@ -9,9 +9,7 @@ import {
   createContext,
   memo,
   use,
-  useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type MouseEvent,
@@ -19,19 +17,7 @@ import {
 } from "react";
 
 import { cn } from "~/lib/utils";
-import {
-  buildDifftasticRows,
-  isTintedSide,
-  segmentLine,
-  stackDifftasticRows,
-  toSyntaxLines,
-  type DifftasticSegment,
-  type DifftasticSyntaxToken,
-  type DifftasticGapRow,
-  type DifftasticLineRow,
-  type DifftasticRow,
-  type DifftasticSide,
-} from "~/lib/difftasticRows";
+import { buildDifftasticRows, toSyntaxLines } from "~/lib/difftasticRows";
 import { getDiffLineStat, resolveDiffThemeName, resolveFileDiffPath } from "~/lib/diffRendering";
 import { getSyntaxHighlighterPromise } from "~/lib/syntaxHighlighting";
 import { useTheme } from "~/hooks/useTheme";
@@ -40,6 +26,7 @@ import { reviewEnvironment } from "~/state/review";
 import { DiffFilePathCopyButton } from "../DiffFilePathCopyButton";
 import { DiffStatLabel } from "../chat/DiffStatLabel";
 import { Button } from "../ui/button";
+import { DifftasticLines, type DifftasticSyntaxLines } from "./DifftasticLines";
 
 interface DifftasticFileStat {
   readonly additions: number;
@@ -134,20 +121,15 @@ export function DifftasticDiffView({
   footer,
 }: DifftasticDiffViewProps) {
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
-  const setScrollRef = useCallback(
-    (node: HTMLDivElement | null) => {
-      setScrollElement(node);
-      containerRef?.(node);
-    },
-    [containerRef],
-  );
-  const nearViewport = useMemo(
-    () =>
-      scrollElement && typeof IntersectionObserver !== "undefined"
-        ? createNearViewportObserver(scrollElement)
-        : null,
-    [scrollElement],
-  );
+  const setScrollRef = (node: HTMLDivElement | null) => {
+    setScrollElement(node);
+    containerRef?.(node);
+  };
+  // Memoized on the element by the compiler; the effect below disconnects each one it replaces.
+  const nearViewport =
+    scrollElement && typeof IntersectionObserver !== "undefined"
+      ? createNearViewportObserver(scrollElement)
+      : null;
   useEffect(() => () => nearViewport?.disconnect(), [nearViewport]);
 
   useEffect(() => {
@@ -167,7 +149,10 @@ export function DifftasticDiffView({
   }, [scrollElement, viewerRef]);
 
   return (
-    <div ref={setScrollRef} className="difftastic-surface relative h-full min-h-0 overflow-auto">
+    <div
+      ref={setScrollRef}
+      className="difftastic-surface relative h-full min-h-0 overflow-auto bg-code text-code-foreground"
+    >
       <NearViewportContext value={nearViewport?.observe ?? null}>
         {files.map((file) => (
           <DifftasticFileSection
@@ -238,8 +223,8 @@ const DifftasticFileSection = memo(function DifftasticFileSection({
   // The body runs the query, so only files near the viewport ask the server for a diff.
   const near = useNearViewport(sectionRef);
   const filePath = resolveFileDiffPath(fileDiff);
-  const target = useMemo(() => resolveTarget(fileDiff), [fileDiff, resolveTarget]);
-  const stat = useMemo(() => statOverride ?? getDiffLineStat([fileDiff]), [fileDiff, statOverride]);
+  const target = resolveTarget(fileDiff);
+  const stat = statOverride ?? getDiffLineStat([fileDiff]);
   const expanded = !collapsed && !unavailable;
   const displayPath =
     fileDiff.prevName && fileDiff.prevName !== filePath
@@ -287,6 +272,7 @@ const DifftasticFileSection = memo(function DifftasticFileSection({
           key={cacheKey}
           environmentId={environmentId}
           target={target}
+          filePath={filePath}
           cacheKey={cacheKey}
           layout={layout}
           wordWrap={wordWrap}
@@ -303,24 +289,17 @@ const MAX_HIGHLIGHT_CHARS = 200_000;
 /** Matches the standard diff's worker pool: longer lines (minified code) render plain. */
 const TOKENIZE_MAX_LINE_LENGTH = 1_000;
 
-type SyntaxLines = ReadonlyArray<ReadonlyArray<DifftasticSyntaxToken>>;
-
-const SyntaxContext = createContext<{
-  readonly old: SyntaxLines | null;
-  readonly new: SyntaxLines | null;
-}>({ old: null, new: null });
-
 /**
  * Tokenizes a whole file with the theme the standard diff uses, so multi-line
  * constructs (strings, comments) color correctly. Renders plain until ready.
  */
-function useSyntaxLines(contents: string, filePath: string): SyntaxLines | null {
+function useSyntaxLines(contents: string, filePath: string): DifftasticSyntaxLines | null {
   const { resolvedTheme } = useTheme();
   const [highlighted, setHighlighted] = useState<{
     readonly contents: string;
     readonly filePath: string;
     readonly theme: string;
-    readonly lines: SyntaxLines;
+    readonly lines: DifftasticSyntaxLines;
   } | null>(null);
   useEffect(() => {
     if (contents.length === 0 || contents.length > MAX_HIGHLIGHT_CHARS) return;
@@ -356,12 +335,14 @@ function DifftasticNotice({ children }: { readonly children: ReactNode }) {
 const DifftasticFileBody = memo(function DifftasticFileBody({
   environmentId,
   target,
+  filePath,
   cacheKey,
   layout,
   wordWrap,
 }: {
   readonly environmentId: EnvironmentId;
   readonly target: ReviewStructuralDiffTarget;
+  readonly filePath: string;
   readonly cacheKey: string;
   readonly layout: "stacked" | "split";
   readonly wordWrap: boolean;
@@ -373,18 +354,10 @@ const DifftasticFileBody = memo(function DifftasticFileBody({
   const result = query.data;
   // Only a changed result is drawn, so only its contents are worth tokenizing.
   const changed = result?.status === "changed" ? result : null;
-  const filePath = target._tag === "turn" ? target.newPath : target.file.newPath;
   const oldSyntax = useSyntaxLines(changed?.oldContents ?? "", filePath);
   const newSyntax = useSyntaxLines(changed?.newContents ?? "", filePath);
-  const syntax = useMemo(() => ({ old: oldSyntax, new: newSyntax }), [newSyntax, oldSyntax]);
-  const rows = useMemo(
-    () => (changed ? buildDifftasticRows(changed, expandedGapIds) : []),
-    [changed, expandedGapIds],
-  );
-  const expandGap = useCallback(
-    (id: number) => setExpandedGapIds((current) => new Set([...current, id])),
-    [],
-  );
+  const rows = changed ? buildDifftasticRows(changed, expandedGapIds) : [];
+  const expandGap = (id: number) => setExpandedGapIds((current) => new Set([...current, id]));
 
   if (!result) {
     return query.error ? (
@@ -402,234 +375,27 @@ const DifftasticFileBody = memo(function DifftasticFileBody({
       </DifftasticNotice>
     );
   }
-  if (result.status === "unchanged" || rows.length === 0) {
+  if (rows.length === 0) {
     return <DifftasticNotice>No structural changes. Only formatting differs.</DifftasticNotice>;
   }
 
   return (
-    <div className={cn("difftastic-code font-mono leading-5", !wordWrap && "overflow-x-auto")}>
+    <div
+      className={cn(
+        "font-mono text-(length:--font-size-code) leading-5",
+        !wordWrap && "overflow-x-auto",
+      )}
+    >
       {result.language ? (
         <div className="px-3 pt-1 text-2xs text-muted-foreground/70">{result.language}</div>
       ) : null}
-      <SyntaxContext value={syntax}>
-        {layout === "split" ? (
-          <SplitRows rows={rows} wordWrap={wordWrap} onExpandGap={expandGap} />
-        ) : (
-          <StackedRows rows={rows} wordWrap={wordWrap} onExpandGap={expandGap} />
-        )}
-      </SyntaxContext>
+      <DifftasticLines
+        rows={rows}
+        layout={layout}
+        wordWrap={wordWrap}
+        syntax={{ old: oldSyntax, new: newSyntax }}
+        onExpandGap={expandGap}
+      />
     </div>
   );
 });
-
-const GapRow = memo(function GapRow({
-  row,
-  className,
-  onExpandGap,
-}: {
-  readonly row: DifftasticGapRow;
-  readonly className?: string;
-  readonly onExpandGap: (id: number) => void;
-}) {
-  return (
-    <button
-      type="button"
-      data-dt-gap
-      className={cn(
-        "block w-full px-3 py-0.5 text-start font-sans text-2xs text-muted-foreground",
-        className,
-      )}
-      onClick={() => onExpandGap(row.id)}
-    >
-      ⋯ {row.hiddenCount} unchanged {row.hiddenCount === 1 ? "line" : "lines"}
-    </button>
-  );
-});
-
-const LINE_NUMBER_CLASS =
-  "w-12 shrink-0 select-none pe-2 text-end tabular-nums text-muted-foreground/50";
-
-const lineTextClass = (wordWrap: boolean) =>
-  wordWrap ? "wrap-anywhere whitespace-pre-wrap" : "whitespace-pre";
-
-function segmentStyle(segment: Pick<DifftasticSegment, "color" | "fontStyle">) {
-  const fontStyle = segment.fontStyle ?? 0;
-  return {
-    ...(segment.color ? { color: segment.color } : {}),
-    ...(fontStyle & 1 ? { fontStyle: "italic" } : {}),
-    ...(fontStyle & 2 ? { fontWeight: 700 } : {}),
-    ...(fontStyle & 4 ? { textDecoration: "underline" } : {}),
-  } as const;
-}
-
-function LineText({ side, tone }: { readonly side: DifftasticSide; readonly tone: "old" | "new" }) {
-  const syntaxLine = use(SyntaxContext)[tone]?.[side.lineNumber];
-  const segments = useMemo(
-    () => segmentLine(side.text, side.changes, syntaxLine),
-    [side, syntaxLine],
-  );
-  return segments.map((segment) => (
-    <span
-      key={segment.start}
-      style={segmentStyle(segment)}
-      // Changed tokens keep their syntax color and gain the diff emphasis, like the standard view.
-      {...(segment.novel
-        ? { "data-dt-novel": tone === "old" ? "deletion" : "addition", className: "rounded-xs" }
-        : {})}
-    >
-      {segment.text}
-    </span>
-  ));
-}
-
-function SplitCell({
-  side,
-  counterpart,
-  tone,
-  wordWrap,
-}: {
-  readonly side: DifftasticSide | null;
-  /** The aligned line on the other side; none means this line was wholly added or removed. */
-  readonly counterpart: DifftasticSide | null;
-  readonly tone: "old" | "new";
-  readonly wordWrap: boolean;
-}) {
-  const divider = tone === "old" && "border-e border-border/40";
-  if (side === null) {
-    return <div data-dt-empty className={cn("min-w-0", divider)} />;
-  }
-  const novel = isTintedSide(side, counterpart);
-  return (
-    <div
-      className={cn("flex min-w-0", divider)}
-      {...(novel ? { "data-dt-line": tone === "old" ? "deletion" : "addition" } : {})}
-    >
-      <span data-dt-gutter className={LINE_NUMBER_CLASS}>
-        {side.lineNumber + 1}
-      </span>
-      <span className={cn("min-w-0 flex-1 pe-2", lineTextClass(wordWrap))}>
-        <LineText side={side} tone={tone} />
-      </span>
-    </div>
-  );
-}
-
-const SplitRow = memo(function SplitRow({
-  row,
-  wordWrap,
-}: {
-  readonly row: DifftasticLineRow;
-  readonly wordWrap: boolean;
-}) {
-  return (
-    <>
-      <SplitCell side={row.old} counterpart={row.new} tone="old" wordWrap={wordWrap} />
-      <SplitCell side={row.new} counterpart={row.old} tone="new" wordWrap={wordWrap} />
-    </>
-  );
-});
-
-function SplitRows({
-  rows,
-  wordWrap,
-  onExpandGap,
-}: {
-  readonly rows: ReadonlyArray<DifftasticRow>;
-  readonly wordWrap: boolean;
-  readonly onExpandGap: (id: number) => void;
-}) {
-  // One grid keeps both columns aligned across rows; unwrapped, each column grows to its longest
-  // line and the body scrolls sideways, like the stacked layout.
-  return (
-    <div
-      className={cn(
-        "grid",
-        wordWrap
-          ? "grid-cols-2"
-          : "w-max min-w-full grid-cols-[minmax(max-content,1fr)_minmax(max-content,1fr)]",
-      )}
-    >
-      {rows.map((row) =>
-        row.kind === "gap" ? (
-          <GapRow
-            key={`gap:${row.id}`}
-            row={row}
-            className="col-span-2"
-            onExpandGap={onExpandGap}
-          />
-        ) : (
-          <SplitRow
-            key={`${row.old?.lineNumber ?? "-"}:${row.new?.lineNumber ?? "-"}`}
-            row={row}
-            wordWrap={wordWrap}
-          />
-        ),
-      )}
-    </div>
-  );
-}
-
-const StackedLine = memo(function StackedLine({
-  row,
-  side,
-  wordWrap,
-}: {
-  readonly row: DifftasticLineRow;
-  readonly side: "old" | "new" | "both";
-  readonly wordWrap: boolean;
-}) {
-  const display = side === "old" ? row.old! : row.new!;
-  return (
-    <div
-      className="flex"
-      {...(side === "both" ? {} : { "data-dt-line": side === "old" ? "deletion" : "addition" })}
-    >
-      <span data-dt-gutter className={LINE_NUMBER_CLASS}>
-        {side !== "new" && row.old ? row.old.lineNumber + 1 : ""}
-      </span>
-      <span data-dt-gutter className={LINE_NUMBER_CLASS}>
-        {side !== "old" && row.new ? row.new.lineNumber + 1 : ""}
-      </span>
-      <span
-        className={cn(
-          "w-4 shrink-0 select-none text-center",
-          side === "old" && "text-diff-deletion-foreground",
-          side === "new" && "text-diff-addition-foreground",
-        )}
-      >
-        {side === "old" ? "-" : side === "new" ? "+" : " "}
-      </span>
-      <span className={cn("min-w-0 flex-1 pe-3", lineTextClass(wordWrap))}>
-        <LineText side={display} tone={side === "old" ? "old" : "new"} />
-      </span>
-    </div>
-  );
-});
-
-function StackedRows({
-  rows,
-  wordWrap,
-  onExpandGap,
-}: {
-  readonly rows: ReadonlyArray<DifftasticRow>;
-  readonly wordWrap: boolean;
-  readonly onExpandGap: (id: number) => void;
-}) {
-  const stacked = useMemo(() => stackDifftasticRows(rows), [rows]);
-  return (
-    <div className={cn(!wordWrap && "w-max min-w-full")}>
-      {stacked.map((entry) =>
-        entry.kind === "gap" ? (
-          <GapRow key={`gap:${entry.id}`} row={entry} onExpandGap={onExpandGap} />
-        ) : (
-          <StackedLine
-            key={`${entry.side}:${entry.row.old?.lineNumber ?? "-"}:${entry.row.new?.lineNumber ?? "-"}`}
-            row={entry.row}
-            side={entry.side}
-            wordWrap={wordWrap}
-          />
-        ),
-      )}
-    </div>
-  );
-}
