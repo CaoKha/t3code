@@ -29,7 +29,6 @@ import {
   type ChatWidth,
   type DiffEngine,
   type DiffLayout,
-  type RightPanelSide,
   type EnvironmentIdentificationMode,
   MAX_APPEARANCE_CONTRAST,
   MAX_CODE_FONT_SIZE,
@@ -221,7 +220,7 @@ const DIFF_ENGINE_LABELS: Record<DiffEngine, string> = {
   difftastic: "difftastic",
 };
 
-const RIGHT_PANEL_SIDE_LABELS: Record<RightPanelSide, string> = {
+const SIDE_LABELS: Record<"left" | "right", string> = {
   right: "Right",
   left: "Left",
 };
@@ -2714,14 +2713,14 @@ export function GeneralSettingsPanel() {
               }}
             >
               <SelectTrigger size="sm" className="w-full sm:w-40" aria-label="Right panel position">
-                <SelectValue>{RIGHT_PANEL_SIDE_LABELS[settings.rightPanelSide]}</SelectValue>
+                <SelectValue>{SIDE_LABELS[settings.rightPanelSide]}</SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
                 <SelectItem hideIndicator value="right">
-                  {RIGHT_PANEL_SIDE_LABELS.right}
+                  {SIDE_LABELS.right}
                 </SelectItem>
                 <SelectItem hideIndicator value="left">
-                  {RIGHT_PANEL_SIDE_LABELS.left}
+                  {SIDE_LABELS.left}
                 </SelectItem>
               </SelectPopup>
             </Select>
@@ -2750,14 +2749,14 @@ export function GeneralSettingsPanel() {
               }}
             >
               <SelectTrigger size="sm" className="w-full sm:w-40" aria-label="File tree position">
-                <SelectValue>{RIGHT_PANEL_SIDE_LABELS[settings.fileTreeSide]}</SelectValue>
+                <SelectValue>{SIDE_LABELS[settings.fileTreeSide]}</SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
                 <SelectItem hideIndicator value="left">
-                  {RIGHT_PANEL_SIDE_LABELS.left}
+                  {SIDE_LABELS.left}
                 </SelectItem>
                 <SelectItem hideIndicator value="right">
-                  {RIGHT_PANEL_SIDE_LABELS.right}
+                  {SIDE_LABELS.right}
                 </SelectItem>
               </SelectPopup>
             </Select>

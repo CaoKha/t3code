@@ -4,18 +4,26 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   registerTerminalEditorRunner,
   runTerminalEditor,
-  terminalEditorCommand,
+  terminalEditorLaunch,
 } from "./terminalEditor";
 
-describe("terminalEditorCommand", () => {
-  it("opens paths, lines, and columns with shell-safe quoting", () => {
-    expect(terminalEditorCommand("neovim", "/repo")).toBe("nvim '/repo'");
-    expect(terminalEditorCommand("neovim", "/repo/src/a b.ts:12")).toBe(
-      "nvim +12 '/repo/src/a b.ts'",
+describe("terminalEditorLaunch", () => {
+  it("passes the path through the environment, never the typed command", () => {
+    const hostile = "/repo/it's; touch pwned\\'\u0003.ts";
+    expect(terminalEditorLaunch("neovim", `${hostile}:12:4`, "darwin")).toEqual({
+      command: `nvim '+call cursor(12, 4)' -- "$T3CODE_EDITOR_TARGET"`,
+      env: { T3CODE_EDITOR_TARGET: hostile },
+    });
+    expect(terminalEditorLaunch("neovim", "/repo/a b.ts:12", "linux").command).toBe(
+      `nvim '+12' -- "$T3CODE_EDITOR_TARGET"`,
     );
-    expect(terminalEditorCommand("neovim", "/repo/it's.ts:12:4")).toBe(
-      "nvim '+call cursor(12, 4)' '/repo/it'\\''s.ts'",
-    );
+  });
+
+  it("reads the path with PowerShell syntax on Windows", () => {
+    expect(terminalEditorLaunch("neovim", "C:\\repo", "windows")).toEqual({
+      command: "nvim -- $env:T3CODE_EDITOR_TARGET",
+      env: { T3CODE_EDITOR_TARGET: "C:\\repo" },
+    });
   });
 });
 
@@ -25,14 +33,14 @@ describe("runTerminalEditor", () => {
   it("reports false without a registered thread and stops routing after unregister", () => {
     expect(runTerminalEditor(environmentId, "neovim", "/repo")).toBe(false);
 
-    const commands: string[] = [];
-    const unregister = registerTerminalEditorRunner(({ command }) => {
-      commands.push(command);
+    const targets: string[] = [];
+    const unregister = registerTerminalEditorRunner(({ target }) => {
+      targets.push(target);
       return true;
     });
     expect(runTerminalEditor(environmentId, "neovim", "/repo/a.ts:3")).toBe(true);
     unregister();
     expect(runTerminalEditor(environmentId, "neovim", "/repo")).toBe(false);
-    expect(commands).toEqual(["nvim +3 '/repo/a.ts'"]);
+    expect(targets).toEqual(["/repo/a.ts:3"]);
   });
 });

@@ -23,12 +23,6 @@ import { RightPanelResizeHandle } from "./RightPanelResizeHandle";
 
 export type PreviewPanelMode = "inline" | "sheet" | "sidebar" | "embedded";
 
-/**
- * Shell for the preview panel. In inline mode the panel is user-resizable
- * via a drag handle on its inner edge (left by default, right when the panel
- * sits left of the chat); width persists per browser. In sheet/sidebar modes
- * the parent owns the size.
- */
 interface PreviewPanelShellProps {
   mode: PreviewPanelMode;
   /** Which side of the chat the inline panel sits on. */
@@ -156,10 +150,7 @@ function PreviewPanelShellFrame(
             ? // Maximized, the panel's edge meets the sidebar's own border
               // (or the window edge), so a second border would double it.
               "flex-1"
-            : cn(
-                "shrink-0",
-                props.side === "left" ? "border-r border-border" : "border-l border-border",
-              )
+            : cn("shrink-0 border-border", props.side === "left" ? "border-r" : "border-l")
           : "w-full",
         collapsible &&
           "[[data-panel-animations=true]_&]:transition-[width] [[data-panel-animations=true]_&]:duration-(--panel-animation-duration) [[data-panel-animations=true]_&]:ease-out",

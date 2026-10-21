@@ -84,7 +84,7 @@ export function useOpenInEditor(options?: string | AtomCommandOptions) {
     >
   > => {
     const { environmentId, input } = value;
-    if (!editorRunsInTerminal(input.editor) || input.reveal === true) {
+    if (!editorRunsInTerminal(input.editor)) {
       return openInEditor(value);
     }
     return runTerminalEditor(environmentId, input.editor, input.cwd)

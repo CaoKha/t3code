@@ -1,6 +1,7 @@
 import * as NodePath from "@effect/platform-node/NodePath";
 import {
   EDITORS,
+  editorRunsInTerminal,
   ExternalLauncherError,
   ExternalLauncherBrowserSpawnError,
   ExternalLauncherCommandNotFoundError,
@@ -519,7 +520,7 @@ const resolveEditorLaunch = Effect.fn("resolveEditorLaunch")(function* (
   }
 
   // A terminal editor needs a tty; clients run it in a T3 terminal tab instead.
-  if ("runsInTerminal" in editorDef && editorDef.runsInTerminal) {
+  if (editorRunsInTerminal(editorDef.id)) {
     return yield* new ExternalLauncherUnsupportedEditorError({ editor: input.editor });
   }
 

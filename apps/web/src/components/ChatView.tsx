@@ -574,7 +574,11 @@ import {
 } from "@t3tools/shared/composerContextReferences";
 import { recallableComposerPrompt } from "./chat/composerPromptHistory";
 import { observeResize } from "~/lib/observeResize";
-import { registerTerminalEditorRunner } from "~/terminalEditor";
+import {
+  registerTerminalEditorRunner,
+  terminalEditorLaunch,
+  type TerminalEditorLaunch,
+} from "~/terminalEditor";
 
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_MODELS: ServerProvider["models"] = [];
@@ -1670,14 +1674,15 @@ export default function ChatView(props: ChatViewProps) {
   const browserAvailable = isPreviewSupportedInRuntime() || activeEnvironmentServerBrowser;
   const rightPanelSide = useClientSettings((settings) => settings.rightPanelSide);
   // The narrow-window sheet always slides in from the right.
-  const panelOnLeft = rightPanelSide === "left" && !shouldUsePlanSidebarSheet;
+  const panelSide = rightPanelSide === "left" && !shouldUsePlanSidebarSheet ? "left" : "right";
+  const panelOnLeft = panelSide === "left";
   const toggleRightPanelSide = () => {
     void updateClientSettings({ rightPanelSide: rightPanelSide === "left" ? "right" : "left" });
   };
   const previewPanelInlineSize = usePreviewPanelInlineSize(undefined, {
     container: workspaceLayoutElement,
     widthStorageKey: `t3code:preview-panel-width:${activeThreadKey}`,
-    edge: panelResizeEdge(panelOnLeft ? "left" : "right"),
+    edge: panelResizeEdge(panelSide),
   });
   const activeThreadShell = serverThread;
   const timelineThreadError =
@@ -3922,45 +3927,49 @@ export default function ChatView(props: ChatViewProps) {
     }
   };
   const togglePreviewPanelStable = useStableCallback(togglePreviewPanel);
-  /** Opens a new right-panel terminal and, when given, types `command` into it. */
-  const launchTerminalSurface = async (command: string | null) => {
-    if (!activeThreadRef) return;
+  /** Opens a new right-panel terminal, optionally running `run` in it. False when none opened. */
+  const launchTerminalSurface = (run?: TerminalEditorLaunch): boolean => {
+    if (!activeThreadRef) return false;
     const launched = terminalActions.launchTerminal({
       place: (terminalId) =>
         useRightPanelStore.getState().openTerminal(activeThreadRef, terminalId),
+      ...(run ? { extraEnv: run.env } : {}),
     });
-    if (!launched) return;
+    if (!launched) return false;
     setTerminalFocusRequestId((value) => value + 1);
-    const openResult = await launched.result;
-    if (command === null || openResult._tag === "Failure") return;
-    const writeResult = await terminalActions.writeToTerminal(launched.terminalId, `${command}\r`);
-    if (writeResult?._tag === "Failure" && !isAtomCommandInterrupted(writeResult)) {
-      const error = squashAtomCommandFailure(writeResult);
-      setThreadError(
-        activeThreadRef.threadId,
-        error instanceof Error ? error.message : `Failed to run "${command}".`,
+    void (async () => {
+      const openResult = await launched.result;
+      if (!run || openResult._tag === "Failure") return;
+      // writeToTerminal targets the current thread, so stop if the user moved on.
+      if (currentRouteThreadKeyRef.current !== routeThreadKey) return;
+      const writeResult = await terminalActions.writeToTerminal(
+        launched.terminalId,
+        `${run.command}\r`,
       );
-    }
+      if (writeResult?._tag === "Failure" && !isAtomCommandInterrupted(writeResult)) {
+        const error = squashAtomCommandFailure(writeResult);
+        setThreadError(
+          activeThreadRef.threadId,
+          error instanceof Error ? error.message : `Failed to run "${run.command}".`,
+        );
+      }
+    })();
+    return true;
   };
   const launchTerminalSurfaceStable = useStableCallback(launchTerminalSurface);
   const addTerminalSurface = () => {
-    void launchTerminalSurface(null);
+    launchTerminalSurface();
   };
   const addTerminalSurfaceStable = useStableCallback(addTerminalSurface);
+  const serverOs = serverConfig?.environment.platform.os;
   useEffect(
     () =>
-      registerTerminalEditorRunner(({ environmentId: targetEnvironmentId, command }) => {
-        if (
-          !activeThreadId ||
-          targetEnvironmentId !== environmentId ||
-          !readEnvironmentScope(environmentId, AuthTerminalOperateScope)
-        ) {
-          return false;
-        }
-        void launchTerminalSurfaceStable(command);
-        return true;
-      }),
-    [activeThreadId, environmentId, launchTerminalSurfaceStable],
+      registerTerminalEditorRunner(
+        ({ environmentId: targetEnvironmentId, editor, target }) =>
+          targetEnvironmentId === environmentId &&
+          launchTerminalSurfaceStable(terminalEditorLaunch(editor, target, serverOs)),
+      ),
+    [environmentId, serverOs, launchTerminalSurfaceStable],
   );
   const splitPanelTerminal = (direction: "horizontal" | "vertical" = "horizontal") => {
     if (
@@ -8077,7 +8086,7 @@ export default function ChatView(props: ChatViewProps) {
     rightPanelAvailable: activeProject !== null,
     rightPanelOpen,
     rightPanelShortcutLabel: shortcutLabelForCommand(keybindings, "rightPanel.toggle"),
-    rightPanelSide: panelOnLeft ? "left" : "right",
+    rightPanelSide: panelSide,
     onToggleTerminal: toggleTerminalVisibilityStable,
     onToggleThreadPanel: toggleThreadPanelStable,
     onToggleRightPanel: toggleRightPanelStable,
@@ -8120,10 +8129,7 @@ export default function ChatView(props: ChatViewProps) {
           )}
           inert={!rightPanelOpen}
         >
-          <RightPanelSideControl
-            side={panelOnLeft ? "left" : "right"}
-            onToggle={toggleRightPanelSide}
-          />
+          <RightPanelSideControl side={panelSide} onToggle={toggleRightPanelSide} />
           <RightPanelMaximizeControl
             maximized={rightPanelMaximized}
             onToggle={toggleRightPanelMaximizedStable}
@@ -8855,7 +8861,7 @@ export default function ChatView(props: ChatViewProps) {
       {rightPanelPresent && !shouldUsePlanSidebarSheet && activeThreadRef ? (
         <RightPanelTabs
           mode="inline"
-          side={panelOnLeft ? "left" : "right"}
+          side={panelSide}
           open={rightPanelOpen}
           keybindings={keybindings}
           getShortcutContext={getShortcutContextStable}
