@@ -9,7 +9,7 @@ import type {
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { lazy, Suspense } from "react";
+import { Activity, lazy, Suspense, useState } from "react";
 import type { ComposerImageAttachment, DraftId } from "../../composerDraftStore";
 import type { ShortcutMatchContext } from "../../keybindings";
 import { type RightPanelSurface, useRightPanelStore } from "../../rightPanelStore";
@@ -22,6 +22,7 @@ import { PullRequestDetailPanel } from "../pullRequest/PullRequestDetailPanel";
 import { PullRequestDetailGhost } from "../pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "../pullRequest/PullRequestsUnavailableState";
 import { ThreadPullRequestsPanel } from "../pullRequest/ThreadPullRequestsPanel";
+import { type KeptSurface, keepRecentSurfaces, keptSurfaceSlot } from "./rightPanelKeepAlive.logic";
 
 const PreviewPanel = lazy(() =>
   import("../preview/PreviewPanel").then((module) => ({ default: module.PreviewPanel })),
@@ -57,9 +58,16 @@ export interface RightPanelFileProps {
   readonly onPendingChange: (relativePath: string, pending: boolean) => void;
 }
 
-/** The body of the thread's right panel for the surface it is showing. */
-export function RightPanelSurfaceContent(props: {
+/**
+ * How many surfaces stay mounted while hidden. Each keeps its DOM and React state, but a hidden
+ * one runs no effects, so it holds no subscriptions and does no work until it is shown again.
+ */
+const KEPT_SURFACE_CAPACITY = 4;
+
+interface RightPanelSurfaceContentProps {
   readonly surface: RightPanelSurface | null;
+  /** Every surface open in the panel; a kept one that is no longer here is dropped. */
+  readonly surfaces: ReadonlyArray<RightPanelSurface>;
   readonly activeSurfaceId: string | null;
   readonly threadRef: ScopedThreadRef;
   readonly environmentId: EnvironmentId;
@@ -77,9 +85,55 @@ export function RightPanelSurfaceContent(props: {
   readonly terminal: RightPanelTerminalProps;
   readonly pullRequest: RightPanelPullRequestProps;
   readonly files: RightPanelFileProps;
-}) {
-  const { surface, threadRef, visible } = props;
-  if (surface === null) return null;
+}
+
+/**
+ * The body of the thread's right panel. Surfaces the reader moved away from stay mounted but
+ * hidden, so coming back to one finds it as it was left: folds, scroll, tabs and selections.
+ */
+export function RightPanelSurfaceContent(props: RightPanelSurfaceContentProps) {
+  const { surface } = props;
+  const threadKey = scopedThreadKey(props.threadRef);
+  const [kept, setKept] = useState<{
+    readonly threadKey: string;
+    readonly surfaces: ReadonlyArray<KeptSurface>;
+  }>({ threadKey, surfaces: [] });
+  const previous = kept.threadKey === threadKey ? kept.surfaces : [];
+  const keptSurfaces = keepRecentSurfaces(previous, surface, props.surfaces, KEPT_SURFACE_CAPACITY);
+  if (kept.threadKey !== threadKey || keptSurfaces !== kept.surfaces) {
+    setKept({ threadKey, surfaces: keptSurfaces });
+  }
+
+  const activeSlot = surface === null ? null : keptSurfaceSlot(surface);
+  return (
+    <>
+      {keptSurfaces.map((entry) => {
+        const active = entry.slot === activeSlot;
+        const shown = active
+          ? surface
+          : props.surfaces.find((candidate) => candidate.id === entry.surfaceId);
+        if (!shown) return null;
+        return (
+          <Activity key={entry.slot} mode={active ? "visible" : "hidden"}>
+            <RightPanelSurfaceBody {...props} surface={shown} active={active} />
+          </Activity>
+        );
+      })}
+      {surface !== null && activeSlot === null ? (
+        <RightPanelSurfaceBody {...props} surface={surface} active />
+      ) : null}
+    </>
+  );
+}
+
+function RightPanelSurfaceBody(
+  props: Omit<RightPanelSurfaceContentProps, "surface"> & {
+    readonly surface: RightPanelSurface;
+    readonly active: boolean;
+  },
+) {
+  const { surface, threadRef } = props;
+  const visible = props.visible && props.active;
   switch (surface.kind) {
     case "preview":
       return (

@@ -578,6 +578,7 @@ it("restores the selected PR tab when switching threads and remounting the right
       root.render(
         <RightPanelSurfaceContent
           surface={selected}
+          surfaces={selected ? [selected] : []}
           activeSurfaceId={selected?.id ?? null}
           threadRef={ref}
           environmentId={ref.environmentId}
