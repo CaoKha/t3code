@@ -3,11 +3,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { usePullRequestStack } from "~/state/usePullRequestStack";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { AnimatedWidth } from "~/components/AnimatedWidth";
-import {
-  scopedThreadKey,
-  scopeProjectRef,
-  scopeThreadRef,
-} from "@t3tools/client-runtime/environment";
+import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -64,7 +60,8 @@ import {
   type ReactNode,
 } from "react";
 
-import { type DraftId, useComposerDraftStore } from "~/composerDraftStore";
+import { composerTargetKey, type DraftId, useComposerDraftStore } from "~/composerDraftStore";
+import { useComposerSendRequestStore } from "~/composerSendRequestStore";
 import { type PullRequestDetailTab, useRightPanelStore } from "~/rightPanelStore";
 import { useEnvironmentSettings } from "~/hooks/useSettings";
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
@@ -270,9 +267,6 @@ const PullRequestCodeTab = lazy(loadCodeTab);
  * apart from the one they were handed: only the sentence still exactly as written may be replaced.
  */
 const lastHandoffPromptByDraft = new Map<string, string>();
-
-const composerTargetKey = (target: ScopedThreadRef | DraftId): string =>
-  typeof target === "string" ? target : scopedThreadKey(target);
 
 function ActOnEnvironmentPicker({
   environments,
@@ -1143,11 +1137,20 @@ export function PullRequestDetailPanel({
   const startAsk = async (
     kind: string,
     task: ThreadTask,
-    options?: { readonly keepGuide?: boolean },
+    options?: {
+      readonly keepGuide?: boolean;
+      /** Send the question right away instead of leaving it in the composer to read over. */
+      readonly send?: boolean;
+    },
   ) => {
     if (!detail || handoff !== null) return;
+    const send = options?.send === true;
     if (attachTarget !== null) {
       writeTaskToComposer(attachTarget, task);
+      if (send) {
+        useComposerSendRequestStore.getState().request(composerTargetKey(attachTarget));
+        return;
+      }
       toastManager.add({
         type: "success",
         title: "Added to the composer",
@@ -1184,6 +1187,10 @@ export function PullRequestDetailPanel({
         title: "Could not open a thread",
         description: "Try again from the project, or open a thread first.",
       });
+      return;
+    }
+    if (send) {
+      useComposerSendRequestStore.getState().request(composerTargetKey(opened.draftId));
       return;
     }
     toastManager.add({
@@ -1388,7 +1395,7 @@ export function PullRequestDetailPanel({
         comment: selection.comment,
         request: selection.request,
       }),
-      options,
+      { ...options, send: true },
     );
   };
 

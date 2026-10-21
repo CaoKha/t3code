@@ -132,6 +132,7 @@ import {
   deriveEffectiveComposerModelState,
   useComposerDraftModelState,
 } from "../../composerDraftStore";
+import { useComposerSendRequestStore } from "../../composerSendRequestStore";
 import {
   MAX_STASH_ENTRIES,
   partitionStashAttachments,
@@ -4073,6 +4074,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }
   };
   const submitComposerStable = useStableCallback(submitComposer);
+  const sendRequested = useComposerSendRequestStore((store) =>
+    store.pending.has(composerDraftTargetKey),
+  );
+  // Declared after the prompt ref sync, so the send reads the prompt just written for it.
+  useEffect(() => {
+    if (!sendRequested) return;
+    if (useComposerSendRequestStore.getState().consume(composerDraftTargetKey)) {
+      submitComposerStable();
+    }
+  }, [composerDraftTargetKey, sendRequested, submitComposerStable]);
   const handleSubmitMessage = (event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     submitComposer(
