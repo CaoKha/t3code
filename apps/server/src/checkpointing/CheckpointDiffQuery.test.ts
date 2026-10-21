@@ -105,6 +105,25 @@ it.effect("computes V2 run diffs from projected checkpoint scopes", () => {
   }).pipe(Effect.provide(layer));
 });
 
+it.effect("resolves the refs bounding a finished turn range", () =>
+  Effect.gen(function* () {
+    const query = yield* CheckpointDiffQuery.CheckpointDiffQuery;
+
+    assert.deepEqual(yield* query.resolveTurnRefs({ threadId, fromTurnCount: 0, toTurnCount: 2 }), {
+      cwd: "/repo",
+      fromCheckpointRef: yield* checkpointRefForScopeOrdinal({
+        scopeId: firstScopeId,
+        ordinalWithinScope: 0,
+      }),
+      toCheckpointRef: secondRef,
+    });
+    const error = yield* query
+      .resolveTurnRefs({ threadId, fromTurnCount: 2, toTurnCount: 3 })
+      .pipe(Effect.flip);
+    assert.instanceOf(error, CheckpointTurnRangeUnavailableError);
+  }).pipe(Effect.provide(layerFor({ projection: Effect.succeed(makeProjection()) }))),
+);
+
 it.effect("diffs a running turn against the workspace and drops the snapshot after", () => {
   const events: Array<string> = [];
   const captureCheckpoint = vi.fn((input: CheckpointStore.CaptureCheckpointInput) =>
@@ -349,6 +368,35 @@ it.effect.each([false, true])(
     }).pipe(Effect.provide(layer));
   },
 );
+
+it.effect("diffs a running turn from a stopped run's checkpoint", () => {
+  const diffCheckpoints = vi.fn((_input: CheckpointStore.DiffCheckpointsInput) =>
+    Effect.succeed("diff --git a/file b/file"),
+  );
+  const projection = makeProjectionAfterStoppedRun(true);
+  const layer = layerFor({
+    projection: Effect.succeed({
+      ...projection,
+      runs: projection.runs.map((run) =>
+        run.ordinal === 3 ? { ...run, status: "running" as const } : run,
+      ),
+      checkpoints: projection.checkpoints.filter(
+        (checkpoint) => checkpoint.runId?.endsWith(":3") !== true,
+      ),
+    }),
+    diffCheckpoints,
+  });
+
+  return Effect.gen(function* () {
+    const query = yield* CheckpointDiffQuery.CheckpointDiffQuery;
+    yield* query.getTurnDiff({ threadId, fromTurnCount: 2, toTurnCount: 3, live: true });
+
+    assert.strictEqual(
+      diffCheckpoints.mock.calls[0]?.[0].fromCheckpointRef,
+      "refs/t3/test/ordinal/2",
+    );
+  }).pipe(Effect.provide(layer));
+});
 
 it.effect("preserves the typed missing-baseline-ref error contract", () => {
   const projection = makeProjection();
