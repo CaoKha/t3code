@@ -1,10 +1,11 @@
-import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { Activity, memo, useEffect, useState } from "react";
 
 import ChatView from "./ChatView";
 import { resolveDraftPromotionNavigationTarget, threadHasStarted } from "./ChatView.logic";
+import { type KeptThreadView, keepRecentThreadViews } from "./ThreadRouteView.logic";
 import { waitForDraftHeroTransition } from "./chat/draftHeroTransition";
 import { SidebarInset } from "./ui/sidebar";
 import {
@@ -25,9 +26,15 @@ import {
 } from "../threadRoutes";
 
 /**
- * Plain server threads are unkeyed, so navigating between them reuses one instance as ChatView
- * expects. Rendered by the `_chat` layout rather than by the two leaf routes, since an element
- * only survives a route swap when the same parent renders it.
+ * How many threads keep their view mounted. A hidden one keeps its DOM and React state, so its
+ * panels come back as they were left, but runs no effects and does no work until shown again.
+ */
+const KEPT_THREAD_VIEW_CAPACITY = 3;
+
+/**
+ * Each thread gets its own ChatView, and the last few stay mounted while hidden. Rendered by the
+ * `_chat` layout rather than by the two leaf routes, since an element only survives a route swap
+ * when the same parent renders it.
  */
 export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
   const navigate = useNavigate();
@@ -69,22 +76,6 @@ export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
   const promotedDraftId = useComposerDraftStore((store) =>
     target.kind === "server" ? store.getDraftIdByRef(target.threadRef) : null,
   );
-  // The draft record is removed once the promoted thread has started, which
-  // is after the route swap. Latch the key so the element that carried the
-  // draft keeps its identity for as long as this thread stays on screen.
-  const [chatViewKey, setChatViewKey] = useState<{ threadKey: string; key: string } | null>(null);
-  const serverThreadKey = target.kind === "server" ? scopedThreadKey(target.threadRef) : null;
-  const nextChatViewKey =
-    serverThreadKey === null
-      ? null
-      : chatViewKey?.threadKey === serverThreadKey
-        ? chatViewKey
-        : promotedDraftId
-          ? { threadKey: serverThreadKey, key: promotedDraftId }
-          : null;
-  if (nextChatViewKey !== chatViewKey) {
-    setChatViewKey(nextChatViewKey);
-  }
   const environmentHasDraftThreads = useComposerDraftStore((store) =>
     serverThreadRef ? store.hasDraftThreadsInEnvironment(serverThreadRef.environmentId) : false,
   );
@@ -163,34 +154,63 @@ export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
     finalizePromotedDraftThreadByRef(target.threadRef);
   }, [draftThread, serverThreadStarted, target]);
 
-  let view: React.ReactNode = null;
+  let shown: KeptThreadView | null = null;
   if (target.kind === "draft") {
     if (draftSession) {
-      view = (
-        <ChatView
-          key={target.draftId}
-          draftId={target.draftId}
-          environmentId={draftSession.environmentId}
-          threadId={draftSession.threadId}
-          routeKind="draft"
-          forceExpandedMobileComposer
-        />
-      );
+      shown = {
+        key: target.draftId,
+        threadKey: scopedThreadKey(
+          scopeThreadRef(draftSession.environmentId, draftSession.threadId),
+        ),
+        environmentId: draftSession.environmentId,
+        threadId: draftSession.threadId,
+        draftId: target.draftId,
+      };
     }
   } else if (renderState === "ready" || (renderState === "loading" && serverThreadShell !== null)) {
-    view = (
-      <ChatView
-        key={nextChatViewKey?.key}
-        environmentId={target.threadRef.environmentId}
-        threadId={target.threadRef.threadId}
-        routeKind="server"
-      />
-    );
+    const threadKey = scopedThreadKey(target.threadRef);
+    shown = {
+      // The draft record is removed once the promoted thread has started, after the route swap;
+      // until then its id names the view that carried the draft.
+      key: promotedDraftId ?? threadKey,
+      threadKey,
+      environmentId: target.threadRef.environmentId,
+      threadId: target.threadRef.threadId,
+      draftId: null,
+    };
+  }
+  const [keptViews, setKeptViews] = useState<ReadonlyArray<KeptThreadView>>([]);
+  const nextKeptViews = keepRecentThreadViews(keptViews, shown, KEPT_THREAD_VIEW_CAPACITY);
+  if (nextKeptViews !== keptViews) {
+    setKeptViews(nextKeptViews);
   }
 
   return (
     <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none md:h-dvh">
-      {view}
+      {nextKeptViews.map((view) => (
+        <Activity
+          key={view.key}
+          mode={shown !== null && view.threadKey === shown.threadKey ? "visible" : "hidden"}
+        >
+          <KeptChatView view={view} />
+        </Activity>
+      ))}
     </SidebarInset>
   );
 }
+
+// Memoized on the kept record, which keeps its identity while unchanged, so a hidden thread's
+// view does not re-render for navigation that belongs to the one on screen.
+const KeptChatView = memo(function KeptChatView({ view }: { view: KeptThreadView }) {
+  return view.draftId === null ? (
+    <ChatView environmentId={view.environmentId} threadId={view.threadId} routeKind="server" />
+  ) : (
+    <ChatView
+      draftId={view.draftId}
+      environmentId={view.environmentId}
+      threadId={view.threadId}
+      routeKind="draft"
+      forceExpandedMobileComposer
+    />
+  );
+});
