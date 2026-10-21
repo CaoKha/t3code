@@ -1043,12 +1043,12 @@ function PullRequestCodeTab({
           kind="draft"
           rangeLabel={`${draft.path}:${getReviewPositionAnchor(draft.position).line}`}
           text=""
-          submitLabel={canCommentOnLines ? "Add to review" : "Add to agent"}
+          submitLabel={canCommentOnLines ? "Add to review" : "Ask agent"}
           {...(canCommentOnLines ? {} : { placeholder: "Ask the agent about these lines…" })}
           {...(canCommentOnLines && onAddToAgentSelection
             ? {
                 secondaryAction: {
-                  label: "Add to agent",
+                  label: "Ask agent",
                   onAction: (text: string) =>
                     finishSelection(draft, text, (comment) =>
                       onAddToAgentSelection({ comment, request: text }),
