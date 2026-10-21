@@ -95,13 +95,19 @@ const errorText = (error: unknown) => {
   return parts.join("\n");
 };
 
-/** Maps a failed read to `unavailable` when the file is too large or binary to compare. */
+/**
+ * Maps a failed read to `unavailable` when the file is too large or binary to compare.
+ * The readers only report these limits as text, and messages carry the file path, so the
+ * patterns match the readers' exact wording rather than a bare word a path could contain.
+ */
 const readFailure = (message: string) => (cause: unknown) => {
   const text = errorText(cause);
-  if (/exceeds the 1 MB|output exceeded/i.test(text)) {
+  if (/exceeds the 1 MB expansion limit|Git output exceeded \d+ bytes/.test(text)) {
     return new StructuralDiffUnavailable({ reason: OVERSIZED_REASON });
   }
-  if (/binary/i.test(text)) return new StructuralDiffUnavailable({ reason: BINARY_REASON });
+  if (/Cannot expand binary file '|' is binary\./.test(text)) {
+    return new StructuralDiffUnavailable({ reason: BINARY_REASON });
+  }
   return fail(message, cause);
 };
 
@@ -116,8 +122,6 @@ const unavailableResult = (reason: string): ReviewStructuralDiffResult => ({
   oldChanges: [],
   newChanges: [],
 });
-
-const splitLines = (contents: string) => contents.split("\n");
 
 const encoder = new TextEncoder();
 
@@ -142,10 +146,7 @@ const byteOffsetConverter = (line: string): ((offset: number) => number) => {
 
 const collectSideChanges = (
   lines: ReadonlyArray<string>,
-  sides: ReadonlyArray<{
-    readonly line_number: number;
-    readonly changes: ReadonlyArray<{ readonly start: number; readonly end: number }>;
-  }>,
+  sides: ReadonlyArray<typeof DifftSide.Type>,
 ): Array<ReviewStructuralDiffLineChanges> => {
   const byLine = new Map<
     number,
@@ -188,8 +189,8 @@ export const toStructuralDiffResult = (
 ): ReviewStructuralDiffResult => {
   const language = output.language ?? null;
   if (language === "Binary") return unavailableResult(BINARY_REASON);
-  const oldLines = splitLines(oldContents);
-  const newLines = splitLines(newContents);
+  const oldLines = oldContents.split("\n");
+  const newLines = newContents.split("\n");
 
   if (output.status === "unchanged") {
     return {
@@ -258,7 +259,7 @@ export const make = Effect.gen(function* () {
       .execute({
         operation: "StructuralDiffService.readFileAtRef",
         cwd,
-        args: ["show", `${ref}:${filePath}`],
+        args: ["show", "--end-of-options", `${ref}:${filePath}`],
         maxOutputBytes: MAX_FILE_BYTES,
       })
       .pipe(Effect.mapError(readFailure(`Could not read '${filePath}' at ${ref}.`)));
@@ -278,8 +279,9 @@ export const make = Effect.gen(function* () {
       return { filePath: target.file.newPath, ...contents };
     }
     if (target._tag === "pullRequest") {
+      // Read as the account the viewer chose, like the pull request file contents RPC.
       const contents = yield* pullRequests
-        .diffFileContents(target.file)
+        .withRoutingCredential(target.file, pullRequests.diffFileContents(target.file))
         .pipe(Effect.mapError(readFailure("Could not read the pull request files to compare.")));
       return { filePath: target.file.newPath, ...contents };
     }
@@ -313,19 +315,16 @@ export const make = Effect.gen(function* () {
     const name = baseName === "" || baseName === "." || baseName === ".." ? "file" : baseName;
     const oldFile = path.join(directory, "old", name);
     const newFile = path.join(directory, "new", name);
-    yield* Effect.all(
+    yield* Effect.forEach(
       [
-        fileSystem.makeDirectory(path.dirname(oldFile)),
-        fileSystem.makeDirectory(path.dirname(newFile)),
-      ],
-      { concurrency: 2 },
-    ).pipe(Effect.mapError((cause) => fail("Could not prepare the files to compare.", cause)));
-    yield* Effect.all(
-      [
-        fileSystem.writeFileString(oldFile, oldContents),
-        fileSystem.writeFileString(newFile, newContents),
-      ],
-      { concurrency: 2 },
+        [oldFile, oldContents],
+        [newFile, newContents],
+      ] as const,
+      ([file, contents]) =>
+        fileSystem
+          .makeDirectory(path.dirname(file))
+          .pipe(Effect.andThen(fileSystem.writeFileString(file, contents))),
+      { concurrency: 2, discard: true },
     ).pipe(Effect.mapError((cause) => fail("Could not prepare the files to compare.", cause)));
 
     const result = yield* runner

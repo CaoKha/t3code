@@ -2,10 +2,12 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
   ProjectId,
+  type PullRequestDiffFileContentsInput,
   PullRequestOperationError,
   type ReviewStructuralDiffInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as CheckpointDiffQuery from "../checkpointing/CheckpointDiffQuery.ts";
@@ -171,42 +173,38 @@ const runOutput = (
   ...overrides,
 });
 
+const pullRequestFile: PullRequestDiffFileContentsInput = {
+  projectId: ProjectId.make("project"),
+  repository: "owner/repo",
+  number: 1,
+  changeType: "change",
+  oldPath: "src/a.ts",
+  newPath: "src/a.ts",
+};
 const pullRequestInput: ReviewStructuralDiffInput = {
-  target: {
-    _tag: "pullRequest",
-    file: {
-      projectId: ProjectId.make("project"),
-      repository: "owner/repo",
-      number: 1,
-      changeType: "change",
-      oldPath: "src/a.ts",
-      newPath: "src/a.ts",
-    },
-  },
+  target: { _tag: "pullRequest", file: pullRequestFile },
 };
 
 const makeService = (options: {
   readonly run: ProcessRunner.ProcessRunner["Service"]["run"];
   readonly diffFileContents?: PullRequestService.PullRequestService["Service"]["diffFileContents"];
+  readonly withRoutingCredential?: PullRequestService.PullRequestService["Service"]["withRoutingCredential"];
 }) =>
   StructuralDiffService.make.pipe(
-    Effect.provideService(ProcessRunner.ProcessRunner, ProcessRunner.ProcessRunner.of(options)),
-    Effect.provideService(PullRequestService.PullRequestService, {
-      diffFileContents:
-        options.diffFileContents ??
-        (() => Effect.succeed({ oldContents: OLD_CONTENTS, newContents: NEW_CONTENTS })),
-    } as unknown as PullRequestService.PullRequestService["Service"]),
-    Effect.provideService(
-      ReviewService.ReviewService,
-      {} as unknown as ReviewService.ReviewService["Service"],
-    ),
-    Effect.provideService(
-      CheckpointDiffQuery.CheckpointDiffQuery,
-      {} as unknown as CheckpointDiffQuery.CheckpointDiffQuery["Service"],
-    ),
-    Effect.provideService(
-      GitVcsDriver.GitVcsDriver,
-      {} as unknown as GitVcsDriver.GitVcsDriver["Service"],
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.mock(ProcessRunner.ProcessRunner)({ run: options.run }),
+        Layer.mock(PullRequestService.PullRequestService)({
+          diffFileContents:
+            options.diffFileContents ??
+            (() => Effect.succeed({ oldContents: OLD_CONTENTS, newContents: NEW_CONTENTS })),
+          withRoutingCredential:
+            options.withRoutingCredential ?? ((_input, operation) => operation),
+        }),
+        Layer.mock(ReviewService.ReviewService)({}),
+        Layer.mock(CheckpointDiffQuery.CheckpointDiffQuery)({}),
+        Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+      ),
     ),
   );
 
@@ -225,6 +223,31 @@ it.layer(NodeServices.layer)("StructuralDiffService", (it) => {
       expect(result.newContents).toBe(NEW_CONTENTS);
       expect(runs[0]).toMatchObject({ command: "difft", timeoutBehavior: "timedOutResult" });
       expect(runs[0]?.args.at(-1)?.endsWith("a.ts")).toBe(true);
+    }),
+  );
+
+  it.effect("reads pull request files as the account the viewer chose", () =>
+    Effect.gen(function* () {
+      const events: Array<string> = [];
+      const service = yield* makeService({
+        run: () => Effect.succeed(runOutput({ stdout: DIFFT_FIXTURE })),
+        diffFileContents: () =>
+          Effect.sync(() => {
+            events.push("read");
+            return { oldContents: OLD_CONTENTS, newContents: NEW_CONTENTS };
+          }),
+        withRoutingCredential: (input, operation) =>
+          Effect.sync(() => events.push(`as ${input.expectedAccountId}`)).pipe(
+            Effect.andThen(operation),
+          ),
+      });
+      yield* service.getStructuralDiff({
+        target: {
+          _tag: "pullRequest",
+          file: { ...pullRequestFile, expectedAccountId: "account" },
+        },
+      });
+      expect(events).toEqual(["as account", "read"]);
     }),
   );
 
@@ -305,15 +328,15 @@ it.layer(NodeServices.layer)("StructuralDiffService", (it) => {
 
   it.effect("reports other pull request read failures as errors", () =>
     Effect.gen(function* () {
-      const service = yield* makeService({
-        run: () => Effect.die("difftastic should not run"),
-        diffFileContents: () =>
-          Effect.fail(
-            new PullRequestOperationError({ operation: "diffFileContents", detail: "offline" }),
-          ),
-      });
-      const error = yield* service.getStructuralDiff(pullRequestInput).pipe(Effect.flip);
-      expect(error.message).toBe("Could not read the pull request files to compare.");
+      for (const detail of ["offline", "Could not read 'src/binary-search.ts'."]) {
+        const service = yield* makeService({
+          run: () => Effect.die("difftastic should not run"),
+          diffFileContents: () =>
+            Effect.fail(new PullRequestOperationError({ operation: "diffFileContents", detail })),
+        });
+        const error = yield* service.getStructuralDiff(pullRequestInput).pipe(Effect.flip);
+        expect(error.message).toBe("Could not read the pull request files to compare.");
+      }
     }),
   );
 });
