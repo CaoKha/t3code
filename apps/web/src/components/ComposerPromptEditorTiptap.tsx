@@ -1562,7 +1562,7 @@ function ComposerPromptEditorTiptapInner(
   });
 
   useLayoutEffect(() => {
-    if (!editor) return;
+    if (!editor || editor.isDestroyed) return;
     const initialSelection = !hasAppliedControlledSelectionRef.current;
     hasAppliedControlledSelectionRef.current = true;
     const normalizedCursor = clampEditorCursor(value, cursor);
@@ -1653,7 +1653,9 @@ function ComposerPromptEditorTiptapInner(
   }, [editor, literalText, skills]);
 
   useLayoutEffect(() => {
-    if (!editor) return;
+    // A thread kept hidden destroys its editor; showing it again renders once with that one
+    // before the replacement arrives, and a destroyed editor has no view to ask.
+    if (!editor || editor.isDestroyed) return;
     if (restoreFocusRef.current) {
       restoreFocusRef.current = false;
       editor.view.focus();
@@ -1661,7 +1663,7 @@ function ComposerPromptEditorTiptapInner(
     }
     return () => {
       // Capture focus before the keyed editor's DOM is removed.
-      restoreFocusRef.current = editor.view.hasFocus();
+      restoreFocusRef.current = !editor.isDestroyed && editor.view.hasFocus();
     };
   }, [editor, restoreFocusRef]);
 
