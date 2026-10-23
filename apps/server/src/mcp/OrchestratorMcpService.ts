@@ -988,7 +988,9 @@ function turnItemText(item: OrchestrationV2TurnItem): string | null {
     case "web_search":
       return jsonText({ patterns: item.patterns, results: item.results });
     case "approval_request":
-      return item.prompt ?? item.requestKind;
+      return [item.prompt ?? item.requestKind, item.reason]
+        .filter((line): line is string => line !== undefined)
+        .join("\n");
     case "checkpoint":
       return jsonText(item.files);
     case "run_interrupt_request":
@@ -2383,6 +2385,7 @@ const make = Effect.gen(function* () {
             type: "thread.stop",
             commandId,
             threadId: current.childThreadId,
+            stopDelegatedTasks: false,
             ...(reason === undefined ? {} : { reason }),
           })
           .pipe(

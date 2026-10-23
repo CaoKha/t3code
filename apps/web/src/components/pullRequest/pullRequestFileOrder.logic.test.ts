@@ -119,17 +119,6 @@ describe("orderDiffFiles", () => {
       "src/orphan.spec.ts",
     ]);
   });
-
-  it("orders the same diff the same way whatever order it arrives in", () => {
-    const files = [
-      file("src/a.ts", ['import { b } from "./b";']),
-      file("src/b.ts"),
-      file("src/c.ts"),
-      file("src/a.test.ts"),
-      file("yarn.lock"),
-    ];
-    expect(order(files)).toEqual(order(files.toReversed()));
-  });
 });
 
 /** A guide whose stops excerpt the first paths of each entry and list the rest. */

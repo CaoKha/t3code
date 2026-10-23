@@ -509,6 +509,9 @@ function PullRequestCodeTab({
     if (appliedRefreshToken.current === refreshToken) return;
     appliedRefreshToken.current = refreshToken;
     setSliceState({ key: scopeKey, cursor: null, slices: NO_SLICES });
+    // An equal refetch keeps the answer's identity, so the emptied slices refill only if the
+    // applied page is forgotten too.
+    setAppliedPage(null);
     refreshFirstDiffPage();
     refreshFilesViewed();
   }, [refreshToken, scopeKey, refreshFirstDiffPage, refreshFilesViewed]);
@@ -1215,8 +1218,7 @@ function PullRequestCodeTab({
                 />
               </TooltipTrigger>
               <TooltipPopup side="bottom">
-                The host withheld part of this diff — a binary file, or a change too large to
-                inline.
+                The host withheld part of this diff: a binary file, or a change too large to inline.
               </TooltipPopup>
             </Tooltip>
           ) : null}
