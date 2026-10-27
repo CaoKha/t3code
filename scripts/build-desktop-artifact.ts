@@ -2807,9 +2807,13 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
 }
 
 export function resolveDesktopProductName(version: string): string {
-  return resolveDesktopUpdateChannel(version) === "nightly"
-    ? "T3 Code (Nightly)"
-    : (desktopPackageJson.productName ?? "T3 Code");
+  if (resolveDesktopUpdateChannel(version) !== "nightly") {
+    return desktopPackageJson.productName ?? "T3 Code";
+  }
+  // Fork builds get their own bundle name so installing the official nightly does not replace them.
+  return process.env.T3CODE_FORK_RELEASE_REPOSITORY?.trim()
+    ? "T3 Code Fork (Nightly)"
+    : "T3 Code (Nightly)";
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
